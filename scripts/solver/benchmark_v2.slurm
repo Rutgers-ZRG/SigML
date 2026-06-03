@@ -25,7 +25,9 @@ mpirun -np "${SLURM_NTASKS}" python scripts/solver/benchmark_v2.py \
   --mesh mesh_beta70.h5 \
   --weights "${SIGML_WEIGHTS:-results/ctseg_net_v2_weights.npz}" \
   --out results/benchmark_v2.json \
-  --tol "${SIGML_TOL:-1e-4}" \
+  --U 2.0 \
+  --U 4.0 \
+  --tol "${SIGML_TOL:-5e-3}" \
   --n-cycles "${SIGML_N_CYCLES:-100000}" \
   --n-warmup-cycles "${SIGML_N_WARMUP:-5000}" \
   --max-ctseg-iter "${SIGML_MAX_CTSEG_ITER:-14}"

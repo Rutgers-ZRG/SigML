@@ -239,6 +239,77 @@ Projected production costs from measured v2 label throughput:
 
 These projections assume the same one-orbital CTSEG setup and current scripting overhead. They do not include extra cost for independent noise replicas, higher statistics needed for `Sigma`, or broader physical validation sweeps.
 
+## Closeout
+
+Date: 2026-06-03
+
+Remote run directory: `/scratch/lz432/sigml_solver_closeout`
+
+Status: `DONE_PARTIAL_SUCCESS`
+
+This closeout uses the v2 on-distribution CTSEG-trained NumPy net from `.solver_v2/ctseg_net_v2_weights.npz`, not the released out-of-distribution `orb1` oracle. The benchmark ran beta `70`, half filling, Bethe `t=1`, `mix=0.5`, `tol=5e-3`, `100000` CTSEG cycles, `5000` warmup cycles, and 64 MPI ranks on `main-redhat`.
+
+The primary accuracy metric is now the review-recommended `G_tau` error on the 118-feature Valenti mesh. Low-frequency `Sigma(iw)` is kept only as a diagnostic because Dyson inversion amplifies small CTSEG/noise differences.
+
+### Closing Benchmark
+
+Job: `55492876`
+
+| U | full CTSEG converged | full CTSEG iterations | NN converged | NN iterations | NN+1 total solver iterations | full vs NN+1 `G_tau` max abs | full vs NN+1 `G_tau` mean abs | full vs NN+1 `G_tau` RMS | full vs NN+1 `Delta_tau` mean abs | full vs NN+1 low-`iw` `Delta` mean abs |
+|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 2.0 | `true` | 5 | `true` | 5 | 6 | 0.003343 | 0.000704 | 0.001159 | 0.002463 | 0.000669 |
+| 4.0 | `true` | 5 | `true` | 5 | 6 | 0.005573 | 0.000538 | 0.001099 | 0.002315 | 0.000596 |
+
+Observable check:
+
+| U | `-G(beta/2)` full CTSEG | `-G(beta/2)` NN | `-G(beta/2)` NN+1 |
+|---:|---:|---:|---:|
+| 2.0 | 0.011019 | 0.011114 | 0.011946 |
+| 4.0 | 0.010977 | 0.011338 | 0.011473 |
+
+Diagnostic low-frequency `Sigma(iw)` error:
+
+| U | full vs NN low-`iw` `Sigma` mean abs | full vs NN+1 low-`iw` `Sigma` mean abs | full vs NN+1 low-`iw` `Sigma` max abs |
+|---:|---:|---:|---:|
+| 2.0 | 5.232253 | 2.454064 | 5.390335 |
+| 4.0 | 7.451544 | 2.393023 | 3.821229 |
+
+Interpretation: on the correct `G_tau` metric, the v2 on-distribution net plus one CTSEG refinement lands close to the full CTSEG reference on this one-orbital Bethe PoC, with mean absolute `G_tau` errors of `7.04e-4` at `U=2` and `5.38e-4` at `U=4`. The one-refinement CTSEG solve improves the direct NN `G_tau` mean error from `1.97e-3 -> 7.04e-4` at `U=2` and `2.21e-3 -> 5.38e-4` at `U=4`.
+
+The iteration-reduction claim is only partial. Full CTSEG converged in 5 iterations at this loose tolerance, while the NN loop also took 5 cheap NN iterations and then one CTSEG refinement solve. This demonstrates that the on-distribution net plus one CTSEG solve gives close `G_tau` agreement and improves over the OOD-oracle failure mode, but it does not demonstrate a dramatic `10-30 -> 1-2` full-CTSEG iteration reduction on this cheap one-orbital benchmark. The honest verdict is: `partially yes` for NN+1 agreement under the primary `G_tau` metric, `no` for a strong iteration-reduction headline.
+
+### Convention-Locking Fixtures
+
+Fixture job: `55492875`
+
+Committed small fixtures under `tests/solver/fixtures/`:
+
+- `valenti_reference_delta_beta70.npz`: a known near-atomic `Delta` converted with Valenti's `mldmft/utils.py` `NNoutput_to_DLR` and `DLR_to_NNinput`; the test asserts `ValentiOrb1Grid` reproduces the same 118-vector and the beta-scaled DLR imfreq convention.
+- `ctseg_projection_near_atomic_beta70.npz`: recorded CTSEG input `Delta`, measured raw `G_tau`, direct Valenti-node vector, and default-DLR-projected 118-vector; the test replays the recorded object through `CtsegLabeler._project_g_tau_to_valenti_vec` with default `projection="dlr"`.
+
+Local fixture-enabled solver test result:
+
+```text
+conda run -n nequip bash -lc 'PYTHONPATH=. python -m pytest tests/solver/ -q'
+26 passed, 1 skipped in 2.40s
+```
+
+### Closeout Slurm Accounting
+
+| job | purpose | state | elapsed | CPUs | core-hours |
+|---:|---|---|---:|---:|---:|
+| 55492875 | convention fixture generation | `COMPLETED` | 25 s | 64 | 0.444 |
+| 55492876 | closing U=2,U=4 v2 benchmark | `COMPLETED` | 267 s | 64 | 4.747 |
+| total | closeout new allocation | `COMPLETED` | 292 s | 64 | 5.191 |
+
+This closeout stayed below the requested `10` new core-hour cap.
+
+Closeout artifacts:
+
+- Remote benchmark JSON: `/scratch/lz432/sigml_solver_closeout/results/benchmark_v2.json`
+- Remote benchmark vectors: `/scratch/lz432/sigml_solver_closeout/results/benchmark_v2.npz`
+- Remote fixtures: `/scratch/lz432/sigml_solver_closeout/results/fixtures/`
+
 ### v2 Artifacts
 
 - Diagnostic JSON: `/scratch/lz432/sigml_solver_v2/results/diagnose_v2.json`

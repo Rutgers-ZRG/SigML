@@ -77,6 +77,7 @@ class CtsegLabeler:
         self.last_info: CtsegSolveInfo | None = None
         self.last_direct_g_vec: np.ndarray | None = None
         self.last_dlr_g_vec: np.ndarray | None = None
+        self._last_solver_g_tau: Any | None = None
 
     def solve(
         self,
@@ -124,7 +125,8 @@ class CtsegLabeler:
         solve_kwargs.update(self.solve_kwargs)
         solver.solve(**solve_kwargs)
 
-        g_vec = self._project_g_tau_to_valenti_vec(solver.results.G_tau["up"])
+        self._last_solver_g_tau = solver.results.G_tau["up"]
+        g_vec = self._project_g_tau_to_valenti_vec(self._last_solver_g_tau)
         self.last_info = self._extract_info(solver)
         return np.asarray(g_vec, dtype=np.float64)
 
