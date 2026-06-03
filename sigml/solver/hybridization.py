@@ -9,6 +9,10 @@ def sample_delta_vec(grid, rng: np.random.Generator, alpha: float) -> np.ndarray
     This follows the scalar-orbital specialization of Valenti Eq. B2/B3:
     nonnegative random DLR weights with an exponential envelope. Positive
     spectral weights give Im Delta(iw) <= 0 on positive Matsubara frequencies.
+    In this DLR representation the imaginary-time kernel is
+    -exp(-omega*tau)/(1 + exp(-beta*omega)), so nonnegative coefficients make
+    Delta(tau) nonpositive and each positive pole contributes a causal scalar
+    term whose positive-frequency imaginary part is nonpositive.
     """
     alpha = float(alpha)
     if alpha < 0.0:
