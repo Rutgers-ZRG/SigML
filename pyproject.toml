@@ -17,5 +17,8 @@ dependencies = []
 Homepage = "https://github.com/americandada29/SigML/"
 
 [tool.setuptools]
-packages = ["sigml"]
 package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sigml*"]
