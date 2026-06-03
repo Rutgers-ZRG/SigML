@@ -1,2 +1,4 @@
 **/SigML.egg-info
 **/__pycache__
+data/
+SAVED_MODELS/
