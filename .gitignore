@@ -2,3 +2,5 @@
 **/__pycache__
 data/
 SAVED_MODELS/
+.solver_v2/
+.DS_Store
