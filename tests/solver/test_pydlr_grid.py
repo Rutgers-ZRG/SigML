@@ -22,3 +22,25 @@ def test_pydlr_mesh_differs_from_valenti_guard():
     v = ValentiOrb1Grid(MESH, beta=70.0)
     assert p.tau_nodes.shape == v.tau_nodes.shape
     assert np.max(np.abs(np.sort(p.tau_nodes) - np.sort(v.tau_nodes))) > 1e-3
+
+
+def test_valenti_grid_handles_matrix_blocks_per_component():
+    grid = ValentiOrb1Grid(MESH, beta=70.0)
+    gtau = np.empty((3, 3, grid.n_tau), dtype=complex)
+    for i in range(3):
+        for j in range(3):
+            weight = (i + 1) + 0.1j * (j + 1)
+            gtau[i, j] = weight * np.exp(-(0.5 + 0.1 * i + 0.03 * j) * grid.tau_nodes)
+
+    coeffs = grid.coeffs_from_gtau(gtau)
+    roundtrip = grid.gtau_from_coeffs(coeffs)
+    giw = grid.gtau_to_giw(gtau)
+    gtau_from_iw = grid.giw_to_gtau(giw)
+    mid = grid.eval_at_tau(gtau, 35.0)
+
+    assert coeffs.shape == gtau.shape
+    assert giw.shape == gtau.shape
+    assert mid.shape == (3, 3)
+    np.testing.assert_allclose(roundtrip, gtau, atol=1e-10)
+    np.testing.assert_allclose(gtau_from_iw, gtau, atol=1e-8)
+    np.testing.assert_allclose(mid[1, 2], grid.eval_at_tau(gtau[1, 2], 35.0), atol=1e-12)

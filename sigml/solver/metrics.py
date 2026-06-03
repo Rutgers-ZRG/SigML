@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from sigml.solver.dyson import positive_matsubara_mask
+from sigml.solver.dyson import positive_frequency_imaginary_parts
 
 
 def g_mse(pred: np.ndarray, target: np.ndarray) -> float:
@@ -16,14 +16,27 @@ def positive_freq_causality_rate(
     iw: np.ndarray,
     tol: float = 1e-6,
 ) -> float:
-    """Fraction of samples with Im Sigma(iw) <= 0 on all positive frequencies."""
+    """Fraction of samples with nonpositive Im values/eigenvalues at positive frequencies."""
+    pos_imag = positive_frequency_imaginary_parts(sigma_iw, iw)
     sigma = np.asarray(sigma_iw)
-    mask = positive_matsubara_mask(iw)
-    pos_imag = sigma[..., mask].imag
-    causal = np.all(pos_imag <= tol, axis=-1)
+    if sigma.ndim >= 3 and sigma.shape[-1] == sigma.shape[-2]:
+        causal = np.all(pos_imag <= tol, axis=(-2, -1))
+    else:
+        causal = np.all(pos_imag <= tol, axis=-1)
     return float(np.mean(causal))
 
 
-def quasiparticle_proxy(g_tau: np.ndarray, grid, beta: float) -> float:
+def quasiparticle_proxy(g_tau: np.ndarray, grid, beta: float) -> float | np.ndarray:
     """Use -G(beta/2), evaluated through the grid's DLR representation."""
-    return float(-grid.eval_at_tau(g_tau, float(beta) / 2.0).real)
+    value = -grid.eval_at_tau(g_tau, float(beta) / 2.0).real
+    if np.asarray(value).shape == ():
+        return float(value)
+    return value
+
+
+def orbital_occupation(g_tau: np.ndarray) -> float | np.ndarray:
+    """Estimate orbital occupation matrix from the final imaginary-time node."""
+    occ = -np.asarray(g_tau)[..., -1].real
+    if np.asarray(occ).shape == ():
+        return float(occ)
+    return occ
