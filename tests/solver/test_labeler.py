@@ -3,6 +3,7 @@ import pytest
 
 from sigml.solver.hybridization import sample_delta_vec
 from sigml.solver.labeler import CthybT2GLabeler, CtsegLabeler, OracleLabeler
+from sigml.solver.pydlr_grid import PydlrGrid
 from sigml.solver.valenti_grid import ValentiOrb1Grid
 
 
@@ -53,31 +54,31 @@ def test_ctseg_labeler_near_atomic_smoke_if_triqs_available():
 
 
 def test_cthyb_t2g_labeler_documents_solid_dmft_setup():
-    grid = ValentiOrb1Grid(MESH, beta=70.0)
-    lab = CthybT2GLabeler(grid=grid, n_tau=128, n_iw=32, n_cycles=10, n_warmup_cycles=0)
+    grid = PydlrGrid(beta=40.0, lamb=600.0, eps=1e-10)
+    lab = CthybT2GLabeler(n_tau=128, n_iw=32, n_cycles=10, n_warmup_cycles=0)
+    assert lab.grid.beta == 40.0
+    assert lab.grid.n_tau == grid.n_tau
     with pytest.raises(ImportError, match="triqs_cthyb"):
         lab.solve(
-            delta_dlr=np.zeros((3, 3, grid.n_tau), dtype=complex),
+            delta_dlr=np.zeros((3, 3, lab.grid.n_tau), dtype=complex),
             U=4.0,
             J=0.6,
             mu=2.0,
-            beta=70.0,
+            beta=40.0,
             eps_d=np.zeros((3, 3), dtype=complex),
         )
 
 
 def test_cthyb_t2g_labeler_rejects_non_hermitian_blocks():
-    grid = ValentiOrb1Grid(MESH, beta=70.0)
-    lab = CthybT2GLabeler(grid=grid)
-    delta = np.zeros((3, 3, grid.n_tau), dtype=complex)
+    lab = CthybT2GLabeler()
+    delta = np.zeros((3, 3, lab.grid.n_tau), dtype=complex)
     delta[0, 1, :] = 0.1
     with pytest.raises(ValueError, match="Hermitian"):
         lab._validate_block_tau("delta_dlr", delta)
 
 
 def test_cthyb_t2g_labeler_rejects_complex_crystal_field():
-    grid = ValentiOrb1Grid(MESH, beta=70.0)
-    lab = CthybT2GLabeler(grid=grid)
+    lab = CthybT2GLabeler()
     eps_d = np.zeros((3, 3), dtype=complex)
     eps_d[0, 1] = 0.1j
     eps_d[1, 0] = -0.1j
@@ -85,11 +86,40 @@ def test_cthyb_t2g_labeler_rejects_complex_crystal_field():
         lab._validate_eps_d(eps_d)
 
 
+def test_cthyb_t2g_projector_fits_beta40_solver_gtau_to_beta40_grid():
+    grid = PydlrGrid(beta=40.0, lamb=600.0, eps=1e-10)
+    lab = CthybT2GLabeler(grid=grid, projection="dlr")
+    tau_mesh = np.linspace(0.0, 40.0, 2001)
+    gtau = np.zeros((3, 3, tau_mesh.size), dtype=complex)
+    for orb, pole in enumerate((0.35, 0.5, 0.75)):
+        gtau[orb, orb] = -np.exp(-pole * tau_mesh) / (1.0 + np.exp(-grid.beta * pole))
+
+    class _Block:
+        def __init__(self, mesh, data):
+            self.mesh = mesh
+            self.data = data
+
+    solver_g_tau = {
+        spin: _Block(tau_mesh, np.moveaxis(gtau, -1, 0).copy())
+        for spin in CthybT2GLabeler.spin_blocks
+    }
+
+    projected = lab._project_g_tau_to_block_dlr(solver_g_tau)
+
+    assert projected.shape == (3, 3, grid.n_tau)
+    np.testing.assert_allclose(projected, np.swapaxes(projected.conj(), 0, 1), atol=1e-10)
+    for orb, pole in enumerate((0.35, 0.5, 0.75)):
+        expected = -np.exp(-pole * grid.tau_nodes) / (1.0 + np.exp(-grid.beta * pole))
+        np.testing.assert_allclose(projected[orb, orb].real, expected, atol=2e-3)
+    assert lab.last_direct_g_dlr is not None
+    assert lab.last_dlr_g_dlr is not None
+
+
 def test_cthyb_t2g_near_atomic_smoke_if_triqs_available():
     pytest.importorskip("triqs_cthyb")
-    grid = ValentiOrb1Grid(MESH, beta=70.0)
+    grid = PydlrGrid(beta=40.0, lamb=600.0, eps=1e-10)
     tau = grid.tau_nodes
-    beta = 70.0
+    beta = 40.0
     delta = np.zeros((3, 3, grid.n_tau), dtype=complex)
     for orb, (bath_v, bath_eps) in enumerate([(0.08, -0.2), (0.10, 0.0), (0.12, 0.25)]):
         delta[orb, orb] = -(bath_v**2) * np.exp(-bath_eps * tau) / (1.0 + np.exp(-beta * bath_eps))

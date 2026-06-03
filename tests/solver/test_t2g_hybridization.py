@@ -5,6 +5,7 @@ from sigml.solver.hybridization import (
     T2GBathSample,
     sample_t2g_bath,
 )
+from sigml.solver.pydlr_grid import PydlrGrid
 from sigml.solver.valenti_grid import ValentiOrb1Grid
 
 
@@ -28,7 +29,7 @@ def _assert_hermitian_causal_roundtrip(grid, sample, tol=1e-8):
 
 
 def test_sample_t2g_bath_broad_covers_documented_ranges_and_is_causal():
-    grid = ValentiOrb1Grid(MESH, beta=70.0)
+    grid = PydlrGrid(beta=40.0, lamb=600.0, eps=1e-10)
     rng = np.random.default_rng(20260603)
 
     samples = [sample_t2g_bath(grid, rng, mode="broad") for _ in range(96)]
@@ -46,8 +47,15 @@ def test_sample_t2g_bath_broad_covers_documented_ranges_and_is_causal():
         assert np.max(values) >= hi - 0.25 * (hi - lo)
 
 
+def test_sample_t2g_bath_defaults_stage2_beta_to_grid_beta40():
+    grid = PydlrGrid(beta=40.0, lamb=600.0, eps=1e-10)
+    rng = np.random.default_rng(11)
+    samples = [sample_t2g_bath(grid, rng, mode="broad") for _ in range(12)]
+    assert {sample.beta for sample in samples} == {40.0}
+
+
 def test_sample_t2g_bath_warm_mode_centers_on_stub_trajectory():
-    grid = ValentiOrb1Grid(MESH, beta=70.0)
+    grid = PydlrGrid(beta=40.0, lamb=600.0, eps=1e-10)
     rng = np.random.default_rng(7)
     center = sample_t2g_bath(grid, rng, mode="broad")
     trajectory = [
@@ -56,7 +64,7 @@ def test_sample_t2g_bath_warm_mode_centers_on_stub_trajectory():
             eps_d=center.eps_d,
             U=4.2,
             J=0.58,
-            beta=70.0,
+            beta=40.0,
             mu=2.1,
             mode="stub",
         )
@@ -87,3 +95,4 @@ def test_sample_t2g_bath_warm_mode_centers_on_stub_trajectory():
     assert abs(np.mean([sample.U for sample in warm]) - 4.2) < 0.08
     assert abs(np.mean([sample.J for sample in warm]) - 0.58) < 0.03
     assert abs(np.mean([sample.mu for sample in warm]) - 2.1) < 0.08
+    assert {sample.beta for sample in warm} == {40.0}

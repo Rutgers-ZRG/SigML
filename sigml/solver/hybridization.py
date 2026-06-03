@@ -9,10 +9,10 @@ import numpy as np
 T2G_BROAD_RANGES = {
     "U": (2.0, 6.0),
     "J": (0.25, 0.9),
-    "beta": (40.0, 100.0),
+    "beta": (40.0, 40.0),
     "mu": (0.8, 3.2),
 }
-"""Documented smoke-set ranges for broad synthetic t2g Kanamori baths."""
+"""Documented smoke-set ranges for Stage-2 SrVO3 t2g Kanamori baths."""
 
 
 @dataclass(frozen=True)
@@ -70,7 +70,7 @@ def sample_t2g_bath(
     """
 
     if mode == "broad":
-        params = _sample_broad_scalars(rng)
+        params = _sample_broad_scalars(rng, beta=float(grid.beta))
         delta = _sample_causal_t2g_delta(grid, rng, alpha=alpha)
         eps_d = _sample_crystal_field(rng)
         return T2GBathSample(delta=delta, eps_d=eps_d, mode="broad", **params)
@@ -81,7 +81,7 @@ def sample_t2g_bath(
         if neighborhood < 0.0 or neighborhood > 1.0:
             raise ValueError("neighborhood must be in [0, 1]")
         center = _coerce_t2g_sample(trajectory[int(rng.integers(0, len(trajectory)))])
-        params = _sample_warm_scalars(center, rng, neighborhood)
+        params = _sample_warm_scalars(center, rng, neighborhood, beta=float(grid.beta))
         fresh = _sample_causal_t2g_delta(grid, rng, alpha=alpha)
         eps_fresh = _sample_crystal_field(rng)
         mix = float(neighborhood)
@@ -92,12 +92,11 @@ def sample_t2g_bath(
     raise ValueError(f"Unsupported t2g bath mode {mode!r}; expected 'broad' or 'warm'")
 
 
-def _sample_broad_scalars(rng: np.random.Generator) -> dict[str, float]:
+def _sample_broad_scalars(rng: np.random.Generator, *, beta: float) -> dict[str, float]:
     u = _uniform_range(rng, "U")
     j_hi = min(T2G_BROAD_RANGES["J"][1], 0.22 * u)
     j_lo = min(T2G_BROAD_RANGES["J"][0], j_hi)
     j = float(rng.uniform(j_lo, j_hi))
-    beta = _uniform_range(rng, "beta")
     mu = _uniform_range(rng, "mu")
     return {"U": u, "J": j, "beta": beta, "mu": mu}
 
@@ -108,12 +107,11 @@ def _uniform_range(rng: np.random.Generator, name: str) -> float:
 
 
 def _sample_warm_scalars(
-    center: T2GBathSample, rng: np.random.Generator, neighborhood: float
+    center: T2GBathSample, rng: np.random.Generator, neighborhood: float, *, beta: float
 ) -> dict[str, float]:
     jitter = max(float(neighborhood), 1e-12)
     u = _clip_range("U", center.U + rng.normal(0.0, 0.25 * jitter))
     j = _clip_range("J", center.J + rng.normal(0.0, 0.12 * jitter))
-    beta = _clip_range("beta", center.beta + rng.normal(0.0, 5.0 * jitter))
     mu = _clip_range("mu", center.mu + rng.normal(0.0, 0.25 * jitter))
     return {"U": u, "J": min(j, 0.25 * u), "beta": beta, "mu": mu}
 
@@ -136,11 +134,21 @@ def _sample_causal_t2g_delta(
     k = np.arange(1, grid.n_tau + 1, dtype=float)
     envelope = np.exp(-alpha * k)
     scale = float(rng.uniform(0.15, 1.2))
+    causal_sign = _causal_coeff_sign(grid)
     coeffs = np.empty((3, 3, grid.n_tau), dtype=complex)
     for idx, weight in enumerate(envelope * scale * rng.random(grid.n_tau)):
-        coeffs[:, :, idx] = weight * _random_density_matrix(rng, 3)
+        coeffs[:, :, idx] = causal_sign * weight * _random_density_matrix(rng, 3)
     delta = grid.gtau_from_coeffs(coeffs)
     return _hermitian_tau(delta)
+
+
+def _causal_coeff_sign(grid) -> float:
+    coeffs = np.zeros((1, 1, grid.n_tau), dtype=complex)
+    coeffs[0, 0, 0] = 1.0
+    giw = grid.giw_from_coeffs(coeffs)
+    pos = grid.iw_nodes.imag > 0
+    imag = np.asarray(giw[0, 0, pos]).imag
+    return 1.0 if np.max(imag) <= 0.0 else -1.0
 
 
 def _random_density_matrix(rng: np.random.Generator, dim: int) -> np.ndarray:

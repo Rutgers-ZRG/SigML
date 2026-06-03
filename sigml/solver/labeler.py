@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from sigml.solver.pydlr_grid import PydlrGrid
 from sigml.solver.valenti_grid import DEFAULT_MESH_PATH, ValentiOrb1Grid
 
 if TYPE_CHECKING:
@@ -65,11 +66,17 @@ class CthybT2GLabeler:
 
     spin_blocks = ("up", "down")
     orbital_dim = 3
+    default_beta = 40.0
+    default_omega_max = 15.0
+    default_eps = 1e-10
 
     def __init__(
         self,
-        grid: ValentiOrb1Grid | None = None,
+        grid: PydlrGrid | ValentiOrb1Grid | None = None,
         mesh_path: str | Path = DEFAULT_MESH_PATH,
+        beta: float = default_beta,
+        omega_max: float = default_omega_max,
+        eps: float = default_eps,
         n_tau: int = 10_001,
         n_iw: int = 1_025,
         n_cycles: int = 100_000,
@@ -78,7 +85,12 @@ class CthybT2GLabeler:
         projection: str = "dlr",
         solve_kwargs: dict[str, Any] | None = None,
     ):
-        self.grid = grid if grid is not None else ValentiOrb1Grid(mesh_path, beta=70.0)
+        del mesh_path
+        self.grid = (
+            grid
+            if grid is not None
+            else PydlrGrid(beta=float(beta), lamb=float(beta) * float(omega_max), eps=float(eps))
+        )
         self.n_tau = int(n_tau)
         self.n_iw = int(n_iw)
         self.n_cycles = int(n_cycles)
@@ -104,6 +116,10 @@ class CthybT2GLabeler:
 
         delta_tau = self._validate_block_tau("delta_dlr", delta_dlr)
         eps = self._validate_eps_d(eps_d)
+        if not np.isclose(float(beta), self.grid.beta):
+            raise ValueError(
+                f"CTHYB solve beta={float(beta)} must match the DLR grid beta={self.grid.beta}"
+            )
 
         solver = Solver(
             beta=float(beta),

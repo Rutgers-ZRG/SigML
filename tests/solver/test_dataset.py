@@ -45,7 +45,7 @@ def test_dataset_m3_tau_blocks_include_j_and_preserve_hermiticity():
         path = os.path.join(d, "m3.npz")
         U = np.array([4.0, 5.0], dtype=np.float32)
         mu = np.array([2.0, 2.5], dtype=np.float32)
-        beta = np.full(n, 70.0, dtype=np.float32)
+        beta = np.full(n, 40.0, dtype=np.float32)
         J = np.array([0.6, 0.7], dtype=np.float32)
         np.savez(path, delta=delta, g=g, U=U, mu=mu, beta=beta, J=J)
 
@@ -59,4 +59,4 @@ def test_dataset_m3_tau_blocks_include_j_and_preserve_hermiticity():
         np.testing.assert_allclose(ds.g_tau, np.swapaxes(ds.g_tau.conj(), 1, 2))
         assert item["x"].shape == (m * m * 2 * n_tau + 4,)
         assert item["y"].shape == (m * m * 2 * n_tau,)
-        assert item["x"][-4:].tolist() == [4.0, 0.5, 70.0, 0.6000000238418579]
+        assert item["x"][-4:].tolist() == [4.0, 0.5, 40.0, 0.6000000238418579]
