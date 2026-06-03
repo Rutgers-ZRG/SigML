@@ -75,6 +75,8 @@ class CtsegLabeler:
         self.projection = projection
         self.solve_kwargs = dict(solve_kwargs or {})
         self.last_info: CtsegSolveInfo | None = None
+        self.last_direct_g_vec: np.ndarray | None = None
+        self.last_dlr_g_vec: np.ndarray | None = None
 
     def solve(
         self,
@@ -141,8 +143,10 @@ class CtsegLabeler:
         return Solver, n
 
     def _project_g_tau_to_valenti_vec(self, g_tau_up: Any) -> np.ndarray:
+        self.last_direct_g_vec = self._direct_project_g_tau(g_tau_up)
+        self.last_dlr_g_vec = None
         if self.projection == "direct":
-            return self._direct_project_g_tau(g_tau_up)
+            return self.last_direct_g_vec
 
         try:
             from h5 import HDFArchive
@@ -158,11 +162,12 @@ class CtsegLabeler:
             g_dlr = make_gf_dlr(g_tau_dlr)
             g_tau_nodes = make_gf_dlr_imtime(g_dlr)
             values = [g_tau_nodes["up"][tau][0, 0] for tau in g_tau_nodes["up"].mesh]
-            return self.grid.gtau_to_vec(np.asarray(values, dtype=complex)).real
+            self.last_dlr_g_vec = self.grid.gtau_to_vec(np.asarray(values, dtype=complex)).real
+            return self.last_dlr_g_vec
         except Exception:
             if self.projection == "dlr":
                 raise
-            return self._direct_project_g_tau(g_tau_up)
+            return self.last_direct_g_vec
 
     def _direct_project_g_tau(self, g_tau_up: Any) -> np.ndarray:
         values = np.array([g_tau_up(float(tau))[0, 0] for tau in self.grid.tau_nodes], dtype=complex)

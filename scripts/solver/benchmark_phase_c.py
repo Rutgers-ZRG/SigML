@@ -61,8 +61,9 @@ def sigma_low(grid: ValentiOrb1Grid, g_vec: np.ndarray, delta_vec: np.ndarray, U
     g_iw = grid.gtau_to_giw(grid.vec_to_gtau(g_vec))
     delta_iw = grid.gtau_to_giw(grid.vec_to_gtau(delta_vec))
     sigma = sigma_from_g(g_iw, delta_iw, mu=U / 2.0, eps_d=0.0, iw=grid.iw_nodes)
-    pos = positive_matsubara_mask(grid.iw_nodes)
-    return sigma[pos][:n]
+    pos_idx = np.flatnonzero(positive_matsubara_mask(grid.iw_nodes))
+    order = np.argsort(np.abs(grid.iw_nodes[pos_idx].imag))
+    return sigma[pos_idx[order[:n]]]
 
 
 def run_mott_curve(

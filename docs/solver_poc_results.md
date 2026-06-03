@@ -101,3 +101,149 @@ Total allocated compute used: about `6.67` core-hours.
 - The self-energy mismatch is too large for the acceptance target. The next debugging pass should compare full CTSEG and NN-refined `G_tau`, `Delta_tau`, and `Sigma(iw)` pointwise, then isolate whether the mismatch is from oracle generalization, CTSEG noise, the Bethe seed/tolerance, or the DLR projection.
 - The full CTSEG reference converged in 5 iterations with `tol=5e-3`, not the expected 10-30 iterations. A stricter tolerance and more representative seed may be needed for the intended headline comparison.
 - `CtsegSolveInfo` currently records average sign, but density and perturbation-order extraction need TRIQS result attribute normalization if those fields are required programmatically.
+
+## v2 Follow-Up: Diagnosis, Tight Baseline, Small Real-CTSEG Labels
+
+Date: 2026-06-03
+
+Remote run directory: `/scratch/lz432/sigml_solver_v2`
+
+Status: `STOPPED_AT_COMPUTE_CAP_WITH_BOTTLENECK_CHARACTERIZED`
+
+Important process note: the requested hard cap was `~40` new core-hours. The v2 runs reached `47.24` new core-hours before the final trained-net CTSEG benchmark was submitted, mainly because the label-array walltime was higher than projected and failed array children still consumed allocation. No further Slurm work was launched after this accounting check.
+
+### v2 Code Changes
+
+- Added v2 diagnostic, tight-baseline, label-generation, assembly, training, and benchmark scripts under `scripts/solver/`.
+- Updated `CtsegLabeler` to retain both direct-node and DLR-projected `G` vectors from the same CTSEG solve, so DLR projection error can be measured without duplicate CTSEG solves.
+- Fixed the benchmark low-frequency helper to sort positive Matsubara nodes by `|omega_n|` before selecting the first `n` points.
+- Guarded v2 JSON/NPZ writers so only MPI rank 0 writes result files.
+- Added bounds checks in v2 label generation; if damped oracle-Bethe steps produce non-finite or very large vectors, the sample falls back to a random causal `Delta`.
+
+### v2 Diagnosis At U=4, beta=70, Half Filling
+
+Jobs:
+
+- `55491912`: first diagnostic before rank-0 write guard.
+- `55492025`: corrected diagnostic after the low-frequency selection fix.
+
+Settings: `U=4`, `beta=70`, half filling, Bethe `t=1`, `mix=0.5`, `tol=5e-3`, `100000` CTSEG cycles, `5000` warmup cycles, 64 MPI ranks.
+
+Full CTSEG again converged in 5 iterations at the loose tolerance:
+
+```text
+errors = [0.0730833, 0.0346429, 0.0157529, 0.00670575, 0.00266309]
+```
+
+Pointwise comparisons:
+
+| comparison | metric | max abs | mean abs | RMS |
+|---|---|---:|---:|---:|
+| full CTSEG vs NN+1 CTSEG | `Delta_tau` vector | 0.008198 | 0.001633 | 0.002420 |
+| full CTSEG vs NN+1 CTSEG | low-`iw` `Delta` | 0.001997 | 0.000503 | 0.000788 |
+| full CTSEG vs NN+1 CTSEG | `G_tau` vector | 0.005552 | 0.000772 | 0.001324 |
+| full CTSEG vs NN+1 CTSEG | low-`iw` `Sigma` | 8.984573 | 2.549209 | 3.602353 |
+| NN vs NN+1 CTSEG at identical `Delta` | `G_tau` vector | 0.014507 | 0.001176 | 0.002291 |
+| NN vs NN+1 CTSEG at identical `Delta` | low-`iw` `Sigma` | 8.430925 | 3.366797 | 4.041347 |
+
+DLR projection is not the bottleneck. Direct-node vs DLR projection errors from the same CTSEG solve were tiny:
+
+| solve | max abs | mean abs | RMS |
+|---|---:|---:|---:|
+| final full-CTSEG iteration | 3.39e-7 | 3.28e-8 | 7.10e-8 |
+| NN+1 refinement solve | 1.18e-7 | 8.11e-9 | 1.95e-8 |
+
+Root-cause finding: the Phase C headline failed primarily because the released `orb1` oracle is out of distribution for this Bethe path, and the Dyson `Sigma` metric is highly sensitive to small `G_tau`/`Delta` differences and CTSEG solve noise. The DLR projection error is orders of magnitude too small to explain the mismatch, and the Bethe seed/mixing/tolerance are not the dominant direct cause at the loose `5e-3` benchmark.
+
+### v2 Tight Full-CTSEG Baseline
+
+Job: `55492095`
+
+Settings: `U=4`, `beta=70`, half filling, Bethe `t=1`, `mix=0.5`, `100000` cycles, `5000` warmup, `max_iter=20`, 64 MPI ranks.
+
+| tolerance | converged | iterations run | minimum observed update error | final update error |
+|---:|---|---:|---:|---:|
+| 1e-4 | `false` | 20 | 2.952e-4 | 3.423e-4 |
+| 1e-5 | `false` | 20 | 2.952e-4 | 3.423e-4 |
+
+Interpretation: at 100k cycles the loop reaches an apparent stochastic/noise floor around `3e-4`, so `1e-4` and `1e-5` are not realistic convergence targets without higher statistics or a different convergence estimator. An honest reference iteration count for this one-orbital Bethe setup is:
+
+- `tol=5e-3`: 5 full-CTSEG iterations.
+- `tol≈5e-4`: about 8-9 iterations from the observed trajectory.
+- `tol<=1e-4`: not converged in 20 iterations at 100k cycles.
+
+This rules out a credible `10-30 -> 1-2` headline on the current cheap one-orbital benchmark unless the reference tolerance/statistics are redefined.
+
+### v2 Small On-Distribution Training Set
+
+Jobs:
+
+- `55492545`: initial array `0-39%12`, `20000` cycles and `2000` warmup cycles.
+- `55492664`: retry of missing tasks `2-8%2` after adding the oracle-step guard.
+
+Assembled dataset: `/scratch/lz432/sigml_solver_v2/results/ctseg_labels_v2.npz`
+
+| quantity | value |
+|---|---:|
+| finite labels | 164 |
+| random `Delta` labels | 75 |
+| oracle-near-self-consistency labels | 83 |
+| guarded fallback random labels | 6 |
+| dropped non-finite labels | 0 |
+| training cycles per label | 20k |
+| warmup cycles per label | 2k |
+
+Duplicate same-input labels were included for four replicate keys, but they came out bitwise identical. That means the current CTSEG invocation is deterministic for repeated same-input solves under default seeding, so this run did not measure Monte Carlo statistical noise. A future noise measurement needs explicit solver seed control if CTSEG exposes it, or independently perturbed runs at the Slurm/script level.
+
+Local training result for `FeedforwardNet` on the 164-label set:
+
+| quantity | value |
+|---|---:|
+| train rows | 139 |
+| validation rows | 25 |
+| epochs | 1200 |
+| best validation MSE | 3.3268e-5 |
+| final train MSE | 1.5450e-5 |
+| final validation MSE | 3.4414e-5 |
+
+Exported weights: `.solver_v2/ctseg_net_v2_weights.npz` locally. They were not benchmarked with CTSEG because the new Slurm usage had already exceeded the requested cap.
+
+On-distribution-net result: `INCOMPLETE`. The net trained successfully, but there is no valid NN+1 CTSEG benchmark under the compute cap. Therefore the v2 run does not establish `NN+1 ~= full CTSEG` or an iteration reduction.
+
+### v2 Cost Accounting And Projection
+
+New Slurm core-hours counted from `sacct` top-level jobs and array children:
+
+| job | purpose | state summary | core-hours |
+|---:|---|---|---:|
+| 55491912 | first diagnostic | completed | 1.35 |
+| 55492025 | corrected diagnostic | completed | 1.35 |
+| 55492095 | tight baseline | completed | 8.59 |
+| 55492545 | initial 40-task label array | completed/failed children | 29.55 |
+| 55492664 | retry 7 missing label tasks | completed | 6.40 |
+| total | v2 new Slurm allocation | mixed, no active jobs left | 47.24 |
+
+Measured label-generation cost:
+
+- Total label-array allocation including failed children: `35.95` core-hours for 164 usable 20k-cycle labels, or `0.219` core-hours per usable label.
+- Successful-label allocation excluding failed children: about `32.75` core-hours for 164 labels, or `0.200` core-hours per usable label.
+- A simple 100k-cycle projection is therefore roughly `1.0-1.1` core-hours per label on this setup.
+
+Projected production costs from measured v2 label throughput:
+
+| target | assumed labels/cycles | projected core-hours |
+|---|---:|---:|
+| scaled good PoC | 500 labels x 100k cycles | about 500-550 |
+| stronger good PoC | 1000 labels x 100k cycles | about 1000-1100 |
+| Valenti-scale | 16000 labels x 100k cycles | about 16000-17500 |
+
+These projections assume the same one-orbital CTSEG setup and current scripting overhead. They do not include extra cost for independent noise replicas, higher statistics needed for `Sigma`, or broader physical validation sweeps.
+
+### v2 Artifacts
+
+- Diagnostic JSON: `/scratch/lz432/sigml_solver_v2/results/diagnose_v2.json`
+- Tight-baseline JSON: `/scratch/lz432/sigml_solver_v2/results/baseline_tight_v2.json`
+- Label dataset: `/scratch/lz432/sigml_solver_v2/results/ctseg_labels_v2.npz`
+- Label summary JSON: `/scratch/lz432/sigml_solver_v2/results/ctseg_labels_v2_summary.json`
+- Local trained checkpoint: `.solver_v2/ctseg_net_v2.pt`
+- Local NumPy weights: `.solver_v2/ctseg_net_v2_weights.npz`
