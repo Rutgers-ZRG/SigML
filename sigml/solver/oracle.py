@@ -42,6 +42,11 @@ class Orb1Oracle:
         delta = np.asarray(delta_vec, dtype=np.float32)
         if delta.shape != (self.grid.feature_dim,):
             raise ValueError(f"Expected delta_vec shape ({self.grid.feature_dim},), got {delta.shape}")
+        if not np.isclose(float(beta), 70.0):
+            raise ValueError(
+                "Orb1Oracle.solve supports beta=70.0 only for the orb1 mesh; "
+                "general beta support requires porting Valenti switch_mesh."
+            )
         if U == 0:
             raise ValueError("U must be nonzero because the Valenti input uses (mu - eps_d) / U")
         scalars = np.array([U, (mu - eps_d) / U, beta], dtype=np.float32)

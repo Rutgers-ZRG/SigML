@@ -7,6 +7,11 @@ from sigml.solver.valenti_grid import ValentiOrb1Grid
 MESH = "/Users/li/dev/RA/dmft/ref/mlDMFT/mldmft/models/orb1/mesh_beta70.h5"
 
 
+def test_orb1_grid_rejects_non_beta70():
+    with np.testing.assert_raises_regex(ValueError, "beta=70.*switch_mesh"):
+        ValentiOrb1Grid(MESH, beta=50.0)
+
+
 def test_tau_nodes_match_saved_mesh():
     grid = ValentiOrb1Grid(MESH, beta=70.0)
     assert grid.n_tau == 59 and grid.feature_dim == 118

@@ -15,6 +15,11 @@ class ValentiOrb1Grid:
     """Load Valenti's orb1 DLR mesh and transforms from mesh_beta70.h5."""
 
     def __init__(self, mesh_path: str | Path = DEFAULT_MESH_PATH, beta: float = 70.0):
+        if not np.isclose(float(beta), 70.0):
+            raise ValueError(
+                "ValentiOrb1Grid supports beta=70.0 only for the orb1 mesh; "
+                "general beta support requires porting Valenti switch_mesh."
+            )
         self.mesh_path = str(mesh_path)
         self.beta = float(beta)
 

@@ -62,8 +62,15 @@ def test_orb1_port_matches_reference_code_on_example_input():
 def test_oracle_solve_runs_and_is_causal_positive_freq():
     oracle = Orb1Oracle()
     delta = np.load(EXAMPLE_INPUT).reshape(-1)
-    g_vec = oracle.solve(delta_vec=delta, U=7.0, mu=3.5, beta=50.0, eps_d=0.0)
+    g_vec = oracle.solve(delta_vec=delta, U=7.0, mu=3.5, beta=70.0, eps_d=0.0)
     g59 = oracle.grid.vec_to_gtau(g_vec)
     giw = oracle.grid.gtau_to_giw(g59)
     pos = giw[oracle.grid.iw_nodes.imag > 0]
     assert np.all(pos.imag <= 1e-6)
+
+
+def test_oracle_rejects_non_orb1_beta():
+    oracle = Orb1Oracle()
+    delta = np.load(EXAMPLE_INPUT).reshape(-1)
+    with np.testing.assert_raises_regex(ValueError, "beta=70.*switch_mesh"):
+        oracle.solve(delta_vec=delta, U=7.0, mu=3.5, beta=50.0, eps_d=0.0)
