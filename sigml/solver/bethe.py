@@ -28,9 +28,17 @@ def dmft_loop(
     tol: float,
     max_iter: int,
     eps_d: float = 0.0,
+    initial_delta_vec: np.ndarray | None = None,
 ) -> DMFTResult:
     """Run Bethe-lattice DMFT self-consistency on Valenti tau-node vectors."""
-    delta_vec = np.zeros(grid.feature_dim, dtype=float)
+    if initial_delta_vec is None:
+        delta_vec = np.zeros(grid.feature_dim, dtype=float)
+    else:
+        delta_vec = np.asarray(initial_delta_vec, dtype=float).copy()
+        if delta_vec.shape != (grid.feature_dim,):
+            raise ValueError(
+                f"initial_delta_vec has shape {delta_vec.shape}, expected ({grid.feature_dim},)"
+            )
     g_vec = np.zeros(grid.feature_dim, dtype=float)
 
     for n_iter in range(1, max_iter + 1):
