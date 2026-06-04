@@ -143,3 +143,31 @@ def test_block_training_smoke_loss_decreases_on_synthetic_data(tmp_path):
     history = ckpt["loss_history"]
     assert ckpt["architecture"] == "block-resnet"
     assert history[-1]["train_loss"] < history[0]["train_loss"]
+
+
+def test_orbital_irrep_training_smoke_on_synthetic_data(tmp_path):
+    dataset = tmp_path / "m3.npz"
+    _synthetic_block_dataset(str(dataset), n=12)
+    args = type(
+        "Args",
+        (),
+        {
+            "dataset": str(dataset),
+            "output": str(tmp_path / "ckpt.pth"),
+            "epochs": 2,
+            "batch_size": 6,
+            "lr": 1e-3,
+            "val_fraction": 0.0,
+            "seed": 0,
+            "device": "cpu",
+            "architecture": "e3nn-irrep",
+            "hidden_dim": 4,
+            "num_layers": 2,
+            "augment": False,
+            "augment_mode": "rotation",
+        },
+    )()
+    ckpt = train(args)
+    assert ckpt["architecture"] == "e3nn-irrep"
+    assert len(ckpt["loss_history"]) == 2
+    assert torch.isfinite(torch.tensor(ckpt["loss_history"][-1]["train_loss"]))

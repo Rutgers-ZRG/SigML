@@ -13,7 +13,7 @@ from torch import nn
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from sigml.solver.net import BlockResNet, FeedforwardNet
+from sigml.solver.net import BlockResNet, FeedforwardNet, OrbitalIrrepNet
 from sigml.solver.nn_solver_schema import (
     solver_input_features,
     unflatten_block_features,
@@ -117,6 +117,16 @@ def load_model(checkpoint_path: str | Path, *, input_dim: int, output_dim: int) 
             scalar_dim=int(checkpoint.get("scalar_dim", input_dim - output_dim)),
             hidden_dim=int(checkpoint.get("hidden_dim", 512)),
             num_layers=int(checkpoint.get("num_layers", 4)),
+        )
+        _load_state_dict(model, state_dict)
+        return model
+    if architecture == "e3nn-irrep":
+        model = OrbitalIrrepNet(
+            orbital_dim=int(checkpoint.get("orbital_dim", 3)),
+            n_tau=int(checkpoint.get("n_tau", (output_dim // (3 * 3 * 2)))),
+            scalar_dim=int(checkpoint.get("scalar_dim", input_dim - output_dim)),
+            hidden_channels=int(checkpoint.get("hidden_dim", checkpoint.get("hidden_channels", 8))),
+            num_layers=int(checkpoint.get("num_layers", 3)),
         )
         _load_state_dict(model, state_dict)
         return model

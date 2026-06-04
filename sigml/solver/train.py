@@ -10,6 +10,7 @@ from sigml.solver.dataset import SolverDataset
 from sigml.solver.net import (
     BlockResNet,
     FeedforwardNet,
+    OrbitalIrrepNet,
     block_features_to_matrix,
     matrix_to_block_features,
 )
@@ -27,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
         "--architecture",
-        choices=("auto", "feedforward", "block-resnet"),
+        choices=("auto", "feedforward", "block-resnet", "e3nn-irrep"),
         default="auto",
         help="Model architecture. auto keeps the legacy orb1 net for M=1 and uses block-resnet for M>1.",
     )
@@ -136,6 +137,14 @@ def _build_model(args: argparse.Namespace, *, dataset: SolverDataset, architectu
             n_tau=dataset.delta_tau.shape[-1],
             scalar_dim=len(dataset.scalar_names),
             hidden_dim=args.hidden_dim,
+            num_layers=args.num_layers,
+        )
+    if architecture == "e3nn-irrep":
+        return OrbitalIrrepNet(
+            orbital_dim=dataset.orbital_dim,
+            n_tau=dataset.delta_tau.shape[-1],
+            scalar_dim=len(dataset.scalar_names),
+            hidden_channels=args.hidden_dim,
             num_layers=args.num_layers,
         )
     raise ValueError(f"unsupported architecture {architecture!r}")

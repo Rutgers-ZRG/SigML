@@ -119,3 +119,140 @@ class BlockResNet(nn.Module):
             x = block(x, scalars)
         raw = self.output(x)
         return hermitianize_block_features(raw, orbital_dim=self.orbital_dim, n_tau=self.n_tau)
+
+
+class ScalarConditionedEquivariantBlock(nn.Module):
+    def __init__(self, irreps, *, scalar_dim: int, condition_dim: int):
+        super().__init__()
+        from e3nn import o3
+        from e3nn.nn import Gate
+
+        self.condition = nn.Sequential(
+            nn.Linear(scalar_dim, condition_dim),
+            nn.SiLU(),
+            nn.Linear(condition_dim, condition_dim),
+        )
+        condition_irreps = o3.Irreps(f"{condition_dim}x0e")
+        self.tensor_product = o3.FullyConnectedTensorProduct(irreps, condition_irreps, irreps)
+
+        hidden_channels = irreps.count("0e")
+        self.pre_gate = o3.Linear(irreps, o3.Irreps(f"{hidden_channels}x0e+{hidden_channels}x0e+{hidden_channels}x2e"))
+        self.gate = Gate(
+            o3.Irreps(f"{hidden_channels}x0e"),
+            [F.silu],
+            o3.Irreps(f"{hidden_channels}x0e"),
+            [torch.sigmoid],
+            o3.Irreps(f"{hidden_channels}x2e"),
+        )
+
+    def forward(self, x: torch.Tensor, scalars: torch.Tensor) -> torch.Tensor:
+        conditioned = self.tensor_product(x, self.condition(scalars))
+        return x + self.gate(self.pre_gate(conditioned))
+
+
+class OrbitalIrrepNet(nn.Module):
+    """e3nn equivariant t2g block solver with symmetric-real ``0e + 2e`` nodes.
+
+    Input and output match :class:`BlockResNet`: flattened complex Delta block
+    features followed by scalar channels, returning flattened complex G block
+    features. The optional Hermitian antisymmetric ``1e`` channel is omitted for
+    the block-diagonal SrVO3 path, so outputs are real symmetric Hermitian.
+    """
+
+    def __init__(
+        self,
+        *,
+        orbital_dim: int = 3,
+        n_tau: int = 59,
+        scalar_dim: int = 4,
+        hidden_channels: int = 8,
+        num_layers: int = 3,
+        condition_dim: int | None = None,
+    ):
+        super().__init__()
+        if int(orbital_dim) != 3:
+            raise ValueError("OrbitalIrrepNet currently implements the t2g orbital_dim=3 case")
+        from e3nn import o3
+
+        self.orbital_dim = int(orbital_dim)
+        self.n_tau = int(n_tau)
+        self.scalar_dim = int(scalar_dim)
+        self.hidden_channels = int(hidden_channels)
+        self.num_layers = int(num_layers)
+        self.block_dim = self.orbital_dim * self.orbital_dim * self.n_tau * 2
+        self.input_dim = self.block_dim + self.scalar_dim
+        self.output_dim = self.block_dim
+
+        rtp = o3.ReducedTensorProducts("ij=ji", i=o3.Irreps("1e"))
+        self.register_buffer("symmetric_basis", rtp.change_of_basis.detach().clone())
+        self.register_buffer("scalar_scale", self._default_scalar_scale(self.scalar_dim))
+
+        self.input_irreps = o3.Irreps(f"{self.n_tau}x0e+{self.n_tau}x2e")
+        self.hidden_irreps = o3.Irreps(f"{self.hidden_channels}x0e+{self.hidden_channels}x2e")
+        self.input_linear = o3.Linear(self.input_irreps, self.hidden_irreps)
+        condition_dim = int(condition_dim if condition_dim is not None else max(4, self.hidden_channels))
+        self.layers = nn.ModuleList(
+            [
+                ScalarConditionedEquivariantBlock(
+                    self.hidden_irreps,
+                    scalar_dim=self.scalar_dim,
+                    condition_dim=condition_dim,
+                )
+                for _ in range(self.num_layers)
+            ]
+        )
+        self.output_linear = o3.Linear(self.hidden_irreps, self.input_irreps)
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        if input.ndim != 2 or input.shape[1] != self.input_dim:
+            raise ValueError(f"input must have shape (batch, {self.input_dim}), got {tuple(input.shape)}")
+        scalars = input[:, -self.scalar_dim :] / self.scalar_scale.to(input.dtype)
+        blocks = block_features_to_matrix(
+            input[:, : self.block_dim],
+            orbital_dim=self.orbital_dim,
+            n_tau=self.n_tau,
+        )
+        x = self._matrix_to_irreps(blocks.real)
+        x = self.input_linear(x)
+        for layer in self.layers:
+            x = layer(x, scalars)
+        return matrix_to_block_features(self._irreps_to_matrix(self.output_linear(x)).to(torch.complex64))
+
+    def _matrix_to_irreps(self, blocks: torch.Tensor) -> torch.Tensor:
+        coeffs = torch.einsum("aij,bijt->bta", self.symmetric_basis.to(blocks.dtype), blocks)
+        scalars = coeffs[..., 0]
+        quadrupoles = coeffs[..., 1:].reshape(blocks.shape[0], self.n_tau * 5)
+        return torch.cat((scalars, quadrupoles), dim=1)
+
+    def _irreps_to_matrix(self, irreps: torch.Tensor) -> torch.Tensor:
+        scalars = irreps[:, : self.n_tau].reshape(irreps.shape[0], self.n_tau, 1)
+        quadrupoles = irreps[:, self.n_tau :].reshape(irreps.shape[0], self.n_tau, 5)
+        coeffs = torch.cat((scalars, quadrupoles), dim=-1)
+        return torch.einsum("bta,aij->bijt", coeffs, self.symmetric_basis.to(irreps.dtype))
+
+    @staticmethod
+    def _default_scalar_scale(scalar_dim: int) -> torch.Tensor:
+        base = torch.ones(int(scalar_dim), dtype=torch.float32)
+        if scalar_dim >= 1:
+            base[0] = 10.0
+        if scalar_dim >= 3:
+            base[2] = 100.0
+        if scalar_dim >= 4:
+            base[3] = 2.0
+        return base
+
+
+def positive_matsubara_causality_penalty(values_iw: torch.Tensor, iw: torch.Tensor) -> torch.Tensor:
+    """Penalty for positive Im eigenvalues on positive Matsubara nodes.
+
+    This mirrors ``positive_freq_causality_rate``/``is_causal``: scalar values or
+    matrix eigenvalues should have nonpositive imaginary parts for ``Im iw > 0``.
+    """
+
+    mask = iw.imag > 0
+    values = values_iw[..., mask, :, :] if values_iw.ndim >= 3 and values_iw.shape[-1] == values_iw.shape[-2] else values_iw[..., mask]
+    if values.ndim >= 3 and values.shape[-1] == values.shape[-2]:
+        imag_parts = torch.linalg.eigvals(values).imag
+    else:
+        imag_parts = values.imag
+    return F.relu(imag_parts).square().mean()
