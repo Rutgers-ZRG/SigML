@@ -50,6 +50,50 @@ class PydlrGrid:
         coeffs = coeffs.reshape((self.rank,) + g.shape[:-1])
         return self.gtau_from_coeffs(np.moveaxis(coeffs, 0, -1))
 
+    def coeffs_from_giw_lstsq(self, omega: np.ndarray, giw: np.ndarray) -> np.ndarray:
+        """Fit DLR coefficients from an arbitrary positive Matsubara mesh.
+
+        Haule eDMFT text files are sampled on a dense positive fermionic
+        Matsubara grid rather than pydlr's compressed frequency nodes.  pydlr's
+        least-squares fitter expects frequency as ``i*omega`` and matrix blocks
+        with frequency on the first axis.
+        """
+
+        omega_arr = np.asarray(omega, dtype=float)
+        g = np.asarray(giw, dtype=complex)
+        if omega_arr.ndim != 1:
+            raise ValueError(f"omega must be one-dimensional, got {omega_arr.shape}")
+        if g.shape[-1] != omega_arr.shape[0]:
+            raise ValueError(
+                f"giw last dimension must match omega length {omega_arr.shape[0]}, got {g.shape}"
+            )
+        if g.ndim < 3 or g.shape[-3] != g.shape[-2]:
+            raise ValueError(f"giw must end with a square matrix block and frequency, got {g.shape}")
+
+        block_shape = g.shape[-3:-1]
+        leading_shape = g.shape[:-3]
+        g_qaa = np.moveaxis(g.reshape((-1,) + block_shape + (g.shape[-1],)), -1, 1)
+        fitted = [
+            self._dlr.lstsq_dlr_from_matsubara(1j * omega_arr, block, self.beta)
+            for block in g_qaa
+        ]
+        coeffs = np.asarray(fitted).reshape(leading_shape + (self.rank,) + block_shape)
+        return np.moveaxis(coeffs, -3, -1)
+
+    def gtau_from_giw_lstsq(self, omega: np.ndarray, giw: np.ndarray) -> np.ndarray:
+        return self.gtau_from_coeffs(self.coeffs_from_giw_lstsq(omega, giw))
+
+    def giw_from_coeffs_at_omega(self, coeffs: np.ndarray, omega: np.ndarray) -> np.ndarray:
+        omega_arr = np.asarray(omega, dtype=float)
+        if omega_arr.ndim != 1:
+            raise ValueError(f"omega must be one-dimensional, got {omega_arr.shape}")
+        c = np.asarray(coeffs, dtype=complex)
+        if c.shape[-1] != self.rank:
+            raise ValueError(f"Expected last dimension {self.rank}, got {c.shape[-1]}")
+        kernel = -1.0 / (1j * omega_arr[:, None] - self.real_frequency_nodes[None, :])
+        values = np.tensordot(c, kernel.T, axes=([-1], [0]))
+        return values
+
     def vec_to_gtau(self, vec: np.ndarray) -> np.ndarray:
         arr = np.asarray(vec)
         if arr.shape[-1] != self.feature_dim:

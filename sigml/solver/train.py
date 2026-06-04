@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, random_split
 
 from sigml.solver.dataset import SolverDataset
 from sigml.solver.net import (
+    BlockMLP,
     BlockResNet,
     FeedforwardNet,
     OrbitalIrrepNet,
@@ -28,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
         "--architecture",
-        choices=("auto", "feedforward", "block-resnet", "e3nn-irrep"),
+        choices=("auto", "feedforward", "block-mlp", "block-resnet", "e3nn-irrep"),
         default="auto",
         help="Model architecture. auto keeps the legacy orb1 net for M=1 and uses block-resnet for M>1.",
     )
@@ -37,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--augment", action="store_true", help="Apply orbital Q Delta Q^T augmentation.")
     parser.add_argument(
         "--augment-mode",
-        choices=("rotation", "permutation", "mixed"),
+        choices=("rotation", "permutation", "d-shell-permutation", "mixed"),
         default="mixed",
         help="Orbital transform family used when --augment is set.",
     )
@@ -131,6 +132,14 @@ def _resolve_architecture(requested: str, dataset: SolverDataset) -> str:
 def _build_model(args: argparse.Namespace, *, dataset: SolverDataset, architecture: str) -> torch.nn.Module:
     if architecture == "feedforward":
         return FeedforwardNet()
+    if architecture == "block-mlp":
+        return BlockMLP(
+            orbital_dim=dataset.orbital_dim,
+            n_tau=dataset.delta_tau.shape[-1],
+            scalar_dim=len(dataset.scalar_names),
+            hidden_dim=args.hidden_dim,
+            num_layers=args.num_layers,
+        )
     if architecture == "block-resnet":
         return BlockResNet(
             orbital_dim=dataset.orbital_dim,
@@ -163,6 +172,13 @@ def random_orbital_transform(
         mode = "permutation" if torch.rand((), generator=generator).item() < 0.5 else "rotation"
     if mode == "permutation":
         perm = torch.randperm(orbital_dim, generator=generator, device=device)
+        return torch.eye(orbital_dim, device=device, dtype=dtype)[perm]
+    if mode == "d-shell-permutation":
+        if int(orbital_dim) != 5:
+            raise ValueError("d-shell-permutation requires orbital_dim=5")
+        eg = torch.randperm(2, generator=generator, device=device)
+        t2g = torch.randperm(3, generator=generator, device=device) + 2
+        perm = torch.cat((eg, t2g))
         return torch.eye(orbital_dim, device=device, dtype=dtype)[perm]
     if mode == "rotation":
         sample = torch.randn(

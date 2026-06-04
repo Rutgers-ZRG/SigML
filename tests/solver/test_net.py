@@ -3,8 +3,10 @@ import torch
 
 from sigml.solver.nn_solver_cli import load_model
 from sigml.solver.net import (
+    BlockMLP,
     BlockResNet,
     FeedforwardNet,
+    InputNormalizedBlockMLP,
     OrbitalIrrepNet,
     block_features_to_matrix,
     matrix_to_block_features,
@@ -42,6 +44,50 @@ def test_block_resnet_m3_shapes_backward_and_hermitian_output():
     loss = y.square().mean()
     loss.backward()
     assert all(param.grad is not None for param in net.parameters() if param.requires_grad)
+
+
+def test_block_mlp_m5_shapes_backward_and_hermitian_output():
+    m = 5
+    n_tau = 4
+    net = BlockMLP(orbital_dim=m, n_tau=n_tau, hidden_dim=32, num_layers=2)
+    x = torch.randn(3, m * m * n_tau * 2 + 4)
+    y = net(x)
+    assert y.shape == (3, m * m * n_tau * 2)
+
+    blocks = block_features_to_matrix(y, orbital_dim=m, n_tau=n_tau)
+    assert torch.allclose(blocks, blocks.transpose(1, 2).conj(), atol=1e-6)
+    assert torch.max(torch.abs(blocks.diagonal(dim1=1, dim2=2).imag)) <= 1e-6
+
+    loss = y.square().mean()
+    loss.backward()
+    assert all(param.grad is not None for param in net.parameters() if param.requires_grad)
+
+
+def test_input_normalized_block_mlp_keeps_raw_io_contract_and_stores_stats():
+    m = 5
+    n_tau = 3
+    input_dim = m * m * n_tau * 2 + 4
+    x_mean = torch.linspace(-2.0, 2.0, input_dim)
+    x_scale = torch.linspace(1.0, 3.0, input_dim)
+    net = InputNormalizedBlockMLP(
+        orbital_dim=m,
+        n_tau=n_tau,
+        hidden_dim=24,
+        num_layers=1,
+        x_mean=x_mean,
+        x_scale=x_scale,
+    )
+
+    x = torch.randn(2, input_dim) * 100.0
+    y = net(x)
+    assert y.shape == (2, m * m * n_tau * 2)
+    assert torch.allclose(net.x_mean, x_mean)
+    assert torch.allclose(net.x_scale, x_scale)
+    assert torch.allclose(
+        y,
+        net.base((x - x_mean) / x_scale.clamp_min(1e-12)),
+        atol=1e-6,
+    )
 
 
 def _random_symmetric_block_features(batch: int, orbital_dim: int, n_tau: int) -> torch.Tensor:

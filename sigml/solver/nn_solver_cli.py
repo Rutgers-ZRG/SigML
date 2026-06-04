@@ -13,7 +13,7 @@ from torch import nn
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from sigml.solver.net import BlockResNet, FeedforwardNet, OrbitalIrrepNet
+from sigml.solver.net import BlockMLP, BlockResNet, FeedforwardNet, InputNormalizedBlockMLP, OrbitalIrrepNet
 from sigml.solver.nn_solver_schema import (
     solver_input_features,
     unflatten_block_features,
@@ -107,6 +107,28 @@ def load_model(checkpoint_path: str | Path, *, input_dim: int, output_dim: int) 
             input_dim=int(checkpoint.get("input_dim", input_dim)),
             output_dim=int(checkpoint.get("output_dim", output_dim)),
             hidden_dims=[int(x) for x in checkpoint.get("hidden_dims", [256, 256])],
+        )
+        _load_state_dict(model, state_dict)
+        return model
+    if architecture == "block-mlp":
+        model = BlockMLP(
+            orbital_dim=int(checkpoint.get("orbital_dim", 3)),
+            n_tau=int(checkpoint.get("n_tau", (output_dim // (3 * 3 * 2)))),
+            scalar_dim=int(checkpoint.get("scalar_dim", input_dim - output_dim)),
+            hidden_dim=int(checkpoint.get("hidden_dim", 512)),
+            num_layers=int(checkpoint.get("num_layers", 4)),
+        )
+        _load_state_dict(model, state_dict)
+        return model
+    if architecture == "input-normalized-block-mlp":
+        model = InputNormalizedBlockMLP(
+            orbital_dim=int(checkpoint.get("orbital_dim", 3)),
+            n_tau=int(checkpoint.get("n_tau", (output_dim // (3 * 3 * 2)))),
+            scalar_dim=int(checkpoint.get("scalar_dim", input_dim - output_dim)),
+            hidden_dim=int(checkpoint.get("hidden_dim", 512)),
+            num_layers=int(checkpoint.get("num_layers", 4)),
+            x_mean=torch.as_tensor(checkpoint["x_mean"], dtype=torch.float32),
+            x_scale=torch.as_tensor(checkpoint["x_scale"], dtype=torch.float32),
         )
         _load_state_dict(model, state_dict)
         return model

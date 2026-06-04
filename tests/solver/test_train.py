@@ -116,6 +116,55 @@ def test_random_orbital_transform_and_batch_augmentation_preserve_target_conjuga
         assert torch.linalg.eigvalsh(aug_target[:, :, :, tau]).max() <= 1e-5
 
 
+def test_d_shell_permutation_augmentation_keeps_eg_and_t2g_subspaces_separate(tmp_path):
+    path = tmp_path / "m5.npz"
+    _synthetic_block_dataset(str(path), n=3, m=5, n_tau=4)
+    ds = SolverDataset(path)
+    batch = {
+        "x": torch.stack([ds[i]["x"] for i in range(3)]),
+        "y": torch.stack([ds[i]["y"] for i in range(3)]),
+    }
+
+    for seed in range(20):
+        generator = torch.Generator().manual_seed(seed)
+        q = random_orbital_transform(5, mode="d-shell-permutation", generator=generator)
+        assert torch.count_nonzero(q).item() == 5
+        assert torch.allclose(q @ q.T, torch.eye(5))
+        assert torch.count_nonzero(q[:2, 2:]).item() == 0
+        assert torch.count_nonzero(q[2:, :2]).item() == 0
+
+    q = torch.tensor(
+        [
+            [0, 1, 0, 0, 0],
+            [1, 0, 0, 0, 0],
+            [0, 0, 0, 1, 0],
+            [0, 0, 0, 0, 1],
+            [0, 0, 1, 0, 0],
+        ],
+        dtype=torch.float32,
+    )
+    aug_x, aug_y = augment_block_batch(
+        batch["x"],
+        batch["y"],
+        orbital_dim=5,
+        n_tau=4,
+        scalar_dim=4,
+        mode="d-shell-permutation",
+        q=q,
+    )
+
+    delta = block_features_to_matrix(batch["x"][:, :-4], orbital_dim=5, n_tau=4)
+    target = block_features_to_matrix(batch["y"], orbital_dim=5, n_tau=4)
+    aug_delta = block_features_to_matrix(aug_x[:, :-4], orbital_dim=5, n_tau=4)
+    aug_target = block_features_to_matrix(aug_y, orbital_dim=5, n_tau=4)
+    q_complex = q.to(delta.dtype)
+    expected_delta = torch.einsum("ab,nbct,dc->nadt", q_complex, delta, q_complex)
+    expected_target = torch.einsum("ab,nbct,dc->nadt", q_complex, target, q_complex)
+
+    assert torch.allclose(aug_delta, expected_delta, atol=1e-6)
+    assert torch.allclose(aug_target, expected_target, atol=1e-6)
+
+
 def test_block_training_smoke_loss_decreases_on_synthetic_data(tmp_path):
     dataset = tmp_path / "m3.npz"
     output = tmp_path / "ckpt.pth"
