@@ -61,24 +61,37 @@ class ValentiOrb1Grid:
 
     def coeffs_from_gtau(self, g59c: np.ndarray) -> np.ndarray:
         g = np.asarray(g59c, dtype=complex)
-        if g.shape != (self.n_tau,):
-            raise ValueError(f"Expected shape ({self.n_tau},), got {g.shape}")
-        return np.linalg.solve(self._cf2it.astype(complex), g)
+        if g.shape[-1] != self.n_tau:
+            raise ValueError(f"Expected last dimension {self.n_tau}, got {g.shape[-1]}")
+        rhs = np.moveaxis(g, -1, 0).reshape(self.n_tau, -1)
+        coeffs = np.linalg.solve(self._cf2it.astype(complex), rhs)
+        coeffs = coeffs.reshape((self.n_tau,) + g.shape[:-1])
+        return np.moveaxis(coeffs, 0, -1)
 
     def gtau_from_coeffs(self, coeffs: np.ndarray) -> np.ndarray:
         c = np.asarray(coeffs, dtype=complex)
-        if c.shape != (self.n_tau,):
-            raise ValueError(f"Expected shape ({self.n_tau},), got {c.shape}")
-        return self._cf2it @ c
+        if c.shape[-1] != self.n_tau:
+            raise ValueError(f"Expected last dimension {self.n_tau}, got {c.shape[-1]}")
+        rhs = np.moveaxis(c, -1, 0).reshape(self.n_tau, -1)
+        gtau = self._cf2it.astype(complex) @ rhs
+        gtau = gtau.reshape((self.n_tau,) + c.shape[:-1])
+        return np.moveaxis(gtau, 0, -1)
 
     def gtau_to_giw(self, g59c: np.ndarray) -> np.ndarray:
-        return self._cf2if @ self.coeffs_from_gtau(g59c)
+        coeffs = self.coeffs_from_gtau(g59c)
+        rhs = np.moveaxis(coeffs, -1, 0).reshape(self.n_tau, -1)
+        giw = self._cf2if @ rhs
+        giw = giw.reshape((self.n_tau,) + coeffs.shape[:-1])
+        return np.moveaxis(giw, 0, -1)
 
     def giw_to_gtau(self, giw: np.ndarray) -> np.ndarray:
         g = np.asarray(giw, dtype=complex)
-        if g.shape != (self.n_tau,):
-            raise ValueError(f"Expected shape ({self.n_tau},), got {g.shape}")
-        coeffs = np.linalg.solve(self._cf2if, g)
+        if g.shape[-1] != self.n_tau:
+            raise ValueError(f"Expected last dimension {self.n_tau}, got {g.shape[-1]}")
+        rhs = np.moveaxis(g, -1, 0).reshape(self.n_tau, -1)
+        coeffs = np.linalg.solve(self._cf2if, rhs)
+        coeffs = coeffs.reshape((self.n_tau,) + g.shape[:-1])
+        coeffs = np.moveaxis(coeffs, 0, -1)
         return self.gtau_from_coeffs(coeffs)
 
     def eval_at_tau(self, g59c: np.ndarray, tau: float) -> complex:
@@ -87,4 +100,7 @@ class ValentiOrb1Grid:
         tau = float(tau)
         log_kernel_abs = -omega * tau - np.logaddexp(0.0, -self.beta * omega)
         kernel = -np.exp(log_kernel_abs)
-        return complex(kernel @ coeffs)
+        values = np.tensordot(kernel, coeffs, axes=(0, -1))
+        if values.shape == ():
+            return complex(values)
+        return values
