@@ -85,3 +85,22 @@ Validation metrics saved in `data/fe_tscan5000k_b232_summary.json`:
 - max positive-Matsubara causality imaginary eigenvalue for `G`: `-0.005899287981488611`
 - max DLR fit residual for `Delta(iw)`: `4.121574635882797e-07`
 - max DLR fit residual for `G(iw)`: `6.892515020047174e-09`
+
+## Phase 5 Scaled Artifact
+
+The scaled assembler script is `scripts/solver/assemble_fe_warm_v2.py`.  It can
+merge multiple compatible eDMFT roots, records `source_iteration_group` for
+grouped train/test splits, and writes a JSONL reject log.  The Phase 5 artifact
+is gitignored at `data/fe_warm_v2.npz`, with a scratch copy on `an` at:
+
+```text
+/scratch/lz432/sigml_fe_warmstart/fe_warm_v2.npz
+```
+
+The accepted v2 dataset has `148` labels from `tscan_5000k_v3` and
+`tscan_5000k_pert1`.  Both are beta `2.32`, `U=5.0`, `J=0.93`, nominal
+double-counting, diagonal M=5 real-harmonic labels.  Additional beta-`2.32`
+exactd roots were parsed but rejected after DLR conversion because their
+`G(tau)` target magnitudes became nonphysical (`1e8-1e9`); FLL roots remain
+excluded because double-counting convention is not encoded in the current model
+input.

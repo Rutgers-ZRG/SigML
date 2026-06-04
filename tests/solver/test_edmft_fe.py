@@ -85,8 +85,32 @@ def test_assemble_fe_dataset_emits_m5_beta232_warm_labels(tmp_path):
     with np.load(output) as data:
         assert data["sigma_dlr_coeffs"].shape == (1, 5, 5, 29)
         assert data["siginp_dynamic_dlr_coeffs"].shape == (1, 5, 5, 29)
+        assert data["source_iteration_group"][0] == f"{root}:.1.1"
         np.testing.assert_allclose(data["siginp_s_oo"][0], [26.0, 26.1, 26.2, 26.3, 26.4])
         np.testing.assert_allclose(data["siginp_Edc"][0], [25.175] * 5)
+
+
+def test_assemble_fe_dataset_quality_gate_logs_sane_occupation_reject(tmp_path):
+    root = _write_fe_fixture(tmp_path)
+    gf_path = root / "imp.0" / "Gf.out.1.1"
+    gf_path.write_text(gf_path.read_text().replace("# nf=6.36", "# nf=12.0", 1))
+    output = tmp_path / "rejected.npz"
+    rejects = tmp_path / "rejects.jsonl"
+
+    result = assemble_fe_dataset(
+        root,
+        output,
+        impurities=(0,),
+        include_current=False,
+        quality_gate=True,
+        reject_log=rejects,
+    )
+
+    assert result["n_labels"] == 0
+    assert result["n_rejects"] == 1
+    reject = json.loads(rejects.read_text())
+    assert reject["suffix"] == ".1.1"
+    assert any(reason.startswith("nf_out_of_range:") for reason in reject["reasons"])
 
 
 def _write_fe_fixture(root):

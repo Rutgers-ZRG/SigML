@@ -51,7 +51,11 @@ def run(args: argparse.Namespace) -> tuple[dict[str, object], dict[str, object]]
     np.random.seed(args.seed)
     dataset = SolverDataset(args.dataset)
     raw = np.load(args.dataset, allow_pickle=True)
-    groups = np.asarray(raw["iteration_suffix"]).astype(str)
+    groups = (
+        np.asarray(raw["source_iteration_group"]).astype(str)
+        if "source_iteration_group" in raw
+        else np.char.add(np.asarray(raw["source"]).astype(str), np.char.add(":", np.asarray(raw["iteration_suffix"]).astype(str)))
+    )
     folds = grouped_fold_indices(groups, args.folds)
     device = torch.device(args.device)
 

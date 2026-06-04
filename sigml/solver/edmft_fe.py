@@ -163,11 +163,18 @@ def assemble_fe_dataset(
     output: str | Path,
     *,
     summary: str | Path | None = None,
+    reject_log: str | Path | None = None,
     impurities: tuple[int, ...] = (0, 1, 2, 3),
     beta: float = 2.32,
     lamb: float = 80.0,
     eps: float = 1e-10,
     include_current: bool = True,
+    quality_gate: bool = False,
+    causality_tol: float = 1e-8,
+    nf_min: float = 0.0,
+    nf_max: float = 10.0,
+    max_roundtrip: float = 1e-5,
+    max_tau_abs: float | None = None,
 ) -> dict[str, object]:
     root_path = Path(root)
     grid = PydlrGrid(beta=beta, lamb=lamb, eps=eps)
@@ -185,6 +192,7 @@ def assemble_fe_dataset(
     mu = []
     eps_d = []
     source = []
+    source_iteration_group = []
     info_json = []
     impurity_index = []
     suffix_rows = []
@@ -192,6 +200,7 @@ def assemble_fe_dataset(
     causality_max_im = []
     roundtrip_delta = []
     roundtrip_g = []
+    rejects = []
 
     for impurity in impurities:
         meta = parse_impurity_metadata(root_path, impurity)
@@ -237,6 +246,43 @@ def assemble_fe_dataset(
             g_tau = _real_diagonal_tau(grid.gtau_from_coeffs(g_coeff))
             g_iw_fit = grid.giw_from_coeffs_at_omega(g_coeff, g_iw.omega)
             _, g_iw_pos = grid.giw_positive(g_coeff)
+            nf_value = float(g_iw.header.get("nf", np.nan))
+            causality_value = _max_imag_eig(g_iw_pos)
+            delta_roundtrip_value = float(
+                np.max(np.abs(grid.giw_from_coeffs_at_omega(delta_coeff, delta_iw.omega) - delta_block_iw))
+            )
+            g_roundtrip_value = float(np.max(np.abs(g_iw_fit - g_block_iw)))
+            reasons = []
+            if not np.isfinite(causality_value) or causality_value > causality_tol:
+                reasons.append(f"noncausal_g:{causality_value:.6g}")
+            if not np.isfinite(nf_value) or nf_value < nf_min or nf_value > nf_max:
+                reasons.append(f"nf_out_of_range:{nf_value:.6g}")
+            if (
+                not np.isfinite(delta_roundtrip_value)
+                or not np.isfinite(g_roundtrip_value)
+                or max(delta_roundtrip_value, g_roundtrip_value) > max_roundtrip
+            ):
+                reasons.append(
+                    f"dlr_roundtrip:{max(delta_roundtrip_value, g_roundtrip_value):.6g}"
+                )
+            tau_abs = float(np.max(np.abs(g_tau)))
+            if max_tau_abs is not None and (not np.isfinite(tau_abs) or tau_abs > max_tau_abs):
+                reasons.append(f"tau_abs:{tau_abs:.6g}")
+            if quality_gate and reasons:
+                rejects.append(
+                    {
+                        "source": str(root_path),
+                        "impurity": impurity,
+                        "suffix": suffix or "current",
+                        "reasons": reasons,
+                        "nf": nf_value,
+                        "g_causality_max_imag_eig": causality_value,
+                        "tau_abs_max": tau_abs,
+                        "dlr_roundtrip_delta_max": delta_roundtrip_value,
+                        "dlr_roundtrip_g_max": g_roundtrip_value,
+                    }
+                )
+                continue
 
             delta_rows.append(delta_tau)
             g_rows.append(g_tau)
@@ -252,14 +298,13 @@ def assemble_fe_dataset(
             mu.append(meta.mu)
             eps_d.append(meta.Ed)
             source.append(str(root_path))
+            source_iteration_group.append(f"{root_path}:{suffix or 'current'}")
             impurity_index.append(impurity)
             suffix_rows.append(suffix or "current")
-            nf.append(float(g_iw.header.get("nf", np.nan)))
-            causality_max_im.append(_max_imag_eig(g_iw_pos))
-            roundtrip_delta.append(
-                float(np.max(np.abs(grid.giw_from_coeffs_at_omega(delta_coeff, delta_iw.omega) - delta_block_iw)))
-            )
-            roundtrip_g.append(float(np.max(np.abs(g_iw_fit - g_block_iw))))
+            nf.append(nf_value)
+            causality_max_im.append(causality_value)
+            roundtrip_delta.append(delta_roundtrip_value)
+            roundtrip_g.append(g_roundtrip_value)
             info_json.append(
                 json.dumps(
                     {
@@ -282,16 +327,33 @@ def assemble_fe_dataset(
                 )
             )
 
-    delta_arr = np.asarray(delta_rows)
-    g_arr = np.asarray(g_rows)
+    if delta_rows:
+        delta_arr = np.asarray(delta_rows)
+        g_arr = np.asarray(g_rows)
+    else:
+        delta_arr = np.empty((0, 5, 5, grid.rank), dtype=complex)
+        g_arr = np.empty((0, 5, 5, grid.rank), dtype=complex)
     U_arr = np.asarray(U, dtype=np.float32)
     mu_arr = np.asarray(mu, dtype=np.float32)
     beta_arr = np.asarray(beta_rows, dtype=np.float32)
     J_arr = np.asarray(J, dtype=np.float32)
-    eps_d_arr = np.asarray(eps_d, dtype=np.float32)
-    x_block = np.stack((delta_arr.real, delta_arr.imag), axis=-1).reshape(delta_arr.shape[0], -1)
-    y = np.stack((g_arr.real, g_arr.imag), axis=-1).reshape(g_arr.shape[0], -1).astype(np.float32)
-    scalars = np.stack((U_arr, mu_arr / U_arr, beta_arr, J_arr), axis=1)
+    eps_d_arr = np.asarray(eps_d, dtype=np.float32).reshape((-1, 5))
+    feature_dim = 5 * 5 * grid.rank * 2
+    x_block = (
+        np.stack((delta_arr.real, delta_arr.imag), axis=-1).reshape(delta_arr.shape[0], feature_dim)
+        if delta_arr.shape[0]
+        else np.empty((0, feature_dim), dtype=np.float64)
+    )
+    y = (
+        np.stack((g_arr.real, g_arr.imag), axis=-1).reshape(g_arr.shape[0], feature_dim).astype(np.float32)
+        if g_arr.shape[0]
+        else np.empty((0, feature_dim), dtype=np.float32)
+    )
+    scalars = (
+        np.stack((U_arr, mu_arr / U_arr, beta_arr, J_arr), axis=1)
+        if U_arr.shape[0]
+        else np.empty((0, len(SCALAR_NAMES)), dtype=np.float32)
+    )
     x = np.concatenate((x_block.astype(np.float32), scalars.astype(np.float32)), axis=1)
 
     output_path = Path(output)
@@ -300,12 +362,12 @@ def assemble_fe_dataset(
         output_path,
         delta=delta_arr,
         g=g_arr,
-        delta_dlr_coeffs=np.asarray(delta_coeff_rows),
-        g_dlr_coeffs=np.asarray(g_coeff_rows),
-        sigma_dlr_coeffs=np.asarray(sigma_coeff_rows),
-        siginp_dynamic_dlr_coeffs=np.asarray(siginp_coeff_rows),
-        siginp_s_oo=np.asarray(siginp_s_oo, dtype=np.float64),
-        siginp_Edc=np.asarray(siginp_Edc, dtype=np.float64),
+        delta_dlr_coeffs=np.asarray(delta_coeff_rows).reshape((-1, 5, 5, grid.rank)),
+        g_dlr_coeffs=np.asarray(g_coeff_rows).reshape((-1, 5, 5, grid.rank)),
+        sigma_dlr_coeffs=np.asarray(sigma_coeff_rows).reshape((-1, 5, 5, grid.rank)),
+        siginp_dynamic_dlr_coeffs=np.asarray(siginp_coeff_rows).reshape((-1, 5, 5, grid.rank)),
+        siginp_s_oo=np.asarray(siginp_s_oo, dtype=np.float64).reshape((-1, 5)),
+        siginp_Edc=np.asarray(siginp_Edc, dtype=np.float64).reshape((-1, 5)),
         U=U_arr,
         mu=mu_arr,
         beta=beta_arr,
@@ -318,6 +380,7 @@ def assemble_fe_dataset(
         info_json=np.asarray(info_json),
         impurity_index=np.asarray(impurity_index, dtype=np.int64),
         iteration_suffix=np.asarray(suffix_rows),
+        source_iteration_group=np.asarray(source_iteration_group),
         nf=np.asarray(nf, dtype=np.float64),
         orbital_order=np.asarray(ORBITALS_REAL_HARMONIC),
         dlr_tau_nodes=grid.tau_nodes,
@@ -346,10 +409,14 @@ def assemble_fe_dataset(
         "max_dlr_roundtrip_delta": float(np.max(roundtrip_delta)) if roundtrip_delta else None,
         "max_dlr_roundtrip_g": float(np.max(roundtrip_g)) if roundtrip_g else None,
         "iteration_suffixes": sorted(set(suffix_rows), key=_suffix_sort_key),
+        "n_rejects": len(rejects),
     }
     if summary is not None:
         Path(summary).parent.mkdir(parents=True, exist_ok=True)
         Path(summary).write_text(json.dumps(summary_data, indent=2, sort_keys=True) + "\n")
+    if reject_log is not None:
+        Path(reject_log).parent.mkdir(parents=True, exist_ok=True)
+        Path(reject_log).write_text("\n".join(json.dumps(row, sort_keys=True) for row in rejects))
     return summary_data
 
 
