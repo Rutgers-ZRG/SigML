@@ -121,6 +121,97 @@ class BlockResNet(nn.Module):
         return hermitianize_block_features(raw, orbital_dim=self.orbital_dim, n_tau=self.n_tau)
 
 
+class BlockMLP(nn.Module):
+    """Plain MLP baseline for arbitrary MxM block solver I/O."""
+
+    def __init__(
+        self,
+        *,
+        orbital_dim: int = 3,
+        n_tau: int = 59,
+        scalar_dim: int = 4,
+        hidden_dim: int = 512,
+        num_layers: int = 4,
+    ):
+        super().__init__()
+        self.orbital_dim = int(orbital_dim)
+        self.n_tau = int(n_tau)
+        self.scalar_dim = int(scalar_dim)
+        self.block_dim = self.orbital_dim * self.orbital_dim * self.n_tau * 2
+        self.input_dim = self.block_dim + self.scalar_dim
+        self.output_dim = self.block_dim
+
+        layers: list[nn.Module] = []
+        left_dim = self.input_dim
+        for _ in range(int(num_layers)):
+            layers.append(nn.Linear(left_dim, hidden_dim))
+            layers.append(nn.GELU())
+            left_dim = hidden_dim
+        layers.append(nn.Linear(left_dim, self.output_dim))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        if input.ndim != 2 or input.shape[1] != self.input_dim:
+            raise ValueError(f"input must have shape (batch, {self.input_dim}), got {tuple(input.shape)}")
+        raw = self.net(input)
+        return hermitianize_block_features(raw, orbital_dim=self.orbital_dim, n_tau=self.n_tau)
+
+
+class InputNormalizedBlockMLP(nn.Module):
+    """BlockMLP with fixed input normalization and raw-output contract."""
+
+    def __init__(
+        self,
+        *,
+        orbital_dim: int = 3,
+        n_tau: int = 59,
+        scalar_dim: int = 4,
+        hidden_dim: int = 512,
+        num_layers: int = 4,
+        x_mean: torch.Tensor,
+        x_scale: torch.Tensor,
+    ):
+        super().__init__()
+        self.base = BlockMLP(
+            orbital_dim=orbital_dim,
+            n_tau=n_tau,
+            scalar_dim=scalar_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+        )
+        if x_mean.shape != (self.base.input_dim,) or x_scale.shape != (self.base.input_dim,):
+            raise ValueError(
+                f"x_mean/x_scale must have shape ({self.base.input_dim},), "
+                f"got {tuple(x_mean.shape)} and {tuple(x_scale.shape)}"
+            )
+        self.register_buffer("x_mean", x_mean.detach().clone().float())
+        self.register_buffer("x_scale", x_scale.detach().clone().float())
+
+    @property
+    def orbital_dim(self) -> int:
+        return self.base.orbital_dim
+
+    @property
+    def n_tau(self) -> int:
+        return self.base.n_tau
+
+    @property
+    def scalar_dim(self) -> int:
+        return self.base.scalar_dim
+
+    @property
+    def input_dim(self) -> int:
+        return self.base.input_dim
+
+    @property
+    def output_dim(self) -> int:
+        return self.base.output_dim
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        x = (input - self.x_mean.to(input.dtype)) / self.x_scale.clamp_min(1e-12).to(input.dtype)
+        return self.base(x)
+
+
 class ScalarConditionedEquivariantBlock(nn.Module):
     def __init__(self, irreps, *, scalar_dim: int, condition_dim: int):
         super().__init__()

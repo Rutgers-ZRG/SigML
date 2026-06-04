@@ -1,6 +1,7 @@
 **/SigML.egg-info
 **/__pycache__
 data/
+checkpoints/
 SAVED_MODELS/
 .solver_v2/
 .DS_Store
