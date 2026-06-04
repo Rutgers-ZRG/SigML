@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
 
-from sigml.solver.metrics import orbital_occupation, quasiparticle_proxy
+from sigml.solver.metrics import g_mse, orbital_occupation, quasiparticle_proxy
 from sigml.solver.nn_solver_client import NNSolverConfig, run_nn_solver
 
 if TYPE_CHECKING:
@@ -37,6 +37,8 @@ class Srvo3NNIteration:
     delta_norm: float
     g_norm: float
     sigma_norm: float
+    converged: bool = False
+    g_delta_mse: float | None = None
 
 
 @dataclass(frozen=True)
@@ -126,6 +128,8 @@ def run_srvo3_nn_harness(
     mix_sigma: float = 0.5,
     mu_precision: float = 0.01,
     regularization: float = 1e-3,
+    convergence_tol: float | None = None,
+    min_iterations: int = 2,
 ) -> Srvo3NNHarnessResult:
     """Run a small SrVO3 SumkDFT loop whose impurity solve is the NN sidecar.
 
@@ -151,6 +155,7 @@ def run_srvo3_nn_harness(
     saved_g: list[np.ndarray] = []
     saved_sigma: list[np.ndarray] = []
     saved_mu: list[float] = []
+    previous_g_dlr: np.ndarray | None = None
 
     for it in range(1, int(n_iterations) + 1):
         sum_k.put_Sigma([sigma])
@@ -169,7 +174,7 @@ def run_srvo3_nn_harness(
             config,
             delta_dlr=delta_dlr,
             U=2.0,
-            mu_over_U=mu / 2.0,
+            mu_over_U=_mu_minus_eps_over_u(mu, eps_d, U=2.0),
             beta=float(beta),
             J=0.65,
             work_dir=output_dir / f"it_{it:03d}_sidecar",
@@ -186,6 +191,15 @@ def run_srvo3_nn_harness(
         occ = np.diag(orbital_occupation(g_dlr)).real
         z_proxy = np.diag(quasiparticle_proxy(g_dlr, grid, float(beta))).real
         sigma_dense = block_gf_average(sigma)
+        g_delta_mse = None
+        converged = False
+        if previous_g_dlr is not None:
+            g_delta_mse = g_mse(g_dlr, previous_g_dlr)
+            converged = (
+                convergence_tol is not None
+                and it >= int(min_iterations)
+                and g_delta_mse <= float(convergence_tol)
+            )
         iterations.append(
             Srvo3NNIteration(
                 iteration=it,
@@ -196,12 +210,17 @@ def run_srvo3_nn_harness(
                 delta_norm=float(np.linalg.norm(delta_dlr)),
                 g_norm=float(np.linalg.norm(g_dlr)),
                 sigma_norm=float(np.linalg.norm(sigma_dense)),
+                converged=bool(converged),
+                g_delta_mse=None if g_delta_mse is None else float(g_delta_mse),
             )
         )
         saved_delta.append(np.asarray(delta_dlr, dtype=np.complex128))
         saved_g.append(np.asarray(g_dlr, dtype=np.complex128))
         saved_sigma.append(np.asarray(sigma_dense, dtype=np.complex128))
         saved_mu.append(mu)
+        previous_g_dlr = np.asarray(g_dlr, dtype=np.complex128)
+        if converged:
+            break
 
     npz_path = output_dir / "srvo3_nn_harness_observables.npz"
     np.savez(
@@ -320,6 +339,15 @@ def _spin_average_matrix(blocks: dict[str, np.ndarray]) -> np.ndarray:
     if not arrays:
         arrays = [np.asarray(value, dtype=complex) for value in blocks.values()]
     return _hermitian_part(np.mean(np.stack(arrays, axis=0), axis=0))
+
+
+def _mu_minus_eps_over_u(mu: float, eps_d: np.ndarray, *, U: float) -> float:
+    eps = np.asarray(eps_d, dtype=complex)
+    if eps.ndim == 0:
+        eps_scalar = float(eps.real)
+    else:
+        eps_scalar = float(np.trace(eps).real / eps.shape[0])
+    return (float(mu) - eps_scalar) / float(U)
 
 
 def _block_names(gf: Any) -> list[str]:

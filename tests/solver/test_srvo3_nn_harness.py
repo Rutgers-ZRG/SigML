@@ -10,6 +10,7 @@ from sigml.solver.nn_solver_client import run_nn_solver
 from sigml.solver.pydlr_grid import PydlrGrid
 from sigml.solver.srvo3_nn_harness import (
     Srvo3NNSidecarSettings,
+    _mu_minus_eps_over_u,
     make_nn_solver_config,
     stabilize_g_dlr,
     write_stub_block_resnet_checkpoint,
@@ -67,3 +68,8 @@ def test_stabilize_g_dlr_preserves_hermiticity_and_adds_diagonal():
 
     np.testing.assert_allclose(stabilized, np.swapaxes(stabilized.conj(), 0, 1))
     assert np.all(np.diagonal(stabilized, axis1=0, axis2=1).real < 0.0)
+
+
+def test_mu_minus_eps_over_u_matches_dataset_scalar_convention():
+    eps_d = np.diag([0.30, 0.33, 0.36]).astype(complex)
+    assert _mu_minus_eps_over_u(12.3, eps_d, U=2.0) == (12.3 - 0.33) / 2.0

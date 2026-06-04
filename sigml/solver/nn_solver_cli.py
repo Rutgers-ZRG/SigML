@@ -110,7 +110,7 @@ def load_model(checkpoint_path: str | Path, *, input_dim: int, output_dim: int) 
         )
         _load_state_dict(model, state_dict)
         return model
-    if architecture == "block-resnet":
+    if architecture in {"block-resnet", "block-resnet-aug"}:
         model = BlockResNet(
             orbital_dim=int(checkpoint.get("orbital_dim", 3)),
             n_tau=int(checkpoint.get("n_tau", (output_dim // (3 * 3 * 2)))),

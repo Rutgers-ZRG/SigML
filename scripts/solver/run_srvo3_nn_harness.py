@@ -32,6 +32,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mix-sigma", type=float, default=0.5)
     parser.add_argument("--mu-precision", type=float, default=0.01)
     parser.add_argument("--regularization", type=float, default=1e-3)
+    parser.add_argument(
+        "--convergence-tol",
+        type=float,
+        default=None,
+        help="Optional stop tolerance on consecutive NN G(tau) MSE.",
+    )
+    parser.add_argument("--min-iterations", type=int, default=2)
     parser.add_argument("--timeout-seconds", type=float, default=300.0)
     parser.add_argument(
         "--python-command",
@@ -78,6 +85,8 @@ def main() -> None:
         mix_sigma=args.mix_sigma,
         mu_precision=args.mu_precision,
         regularization=args.regularization,
+        convergence_tol=args.convergence_tol,
+        min_iterations=args.min_iterations,
     )
     print(json.dumps(result_to_json(result), indent=2, sort_keys=True))
 
