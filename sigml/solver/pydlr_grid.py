@@ -69,7 +69,7 @@ class PydlrGrid:
         omega = self.real_frequency_nodes
         tau = float(tau)
         log_kernel_abs = -omega * tau - np.logaddexp(0.0, -self.beta * omega)
-        kernel = -np.exp(log_kernel_abs)
+        kernel = np.exp(log_kernel_abs)
         values = np.tensordot(kernel, coeffs, axes=(0, -1))
         if values.shape == ():
             return complex(values)

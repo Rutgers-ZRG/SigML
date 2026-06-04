@@ -83,6 +83,7 @@ class CthybT2GLabeler:
         n_warmup_cycles: int = 5_000,
         length_cycle: int = 50,
         projection: str = "dlr",
+        delta_interface: bool = True,
         solve_kwargs: dict[str, Any] | None = None,
     ):
         del mesh_path
@@ -97,6 +98,7 @@ class CthybT2GLabeler:
         self.n_warmup_cycles = int(n_warmup_cycles)
         self.length_cycle = int(length_cycle)
         self.projection = projection
+        self.delta_interface = bool(delta_interface)
         self.solve_kwargs = dict(solve_kwargs or {})
         self.last_info: CthybSolveInfo | None = None
         self.last_direct_g_dlr: np.ndarray | None = None
@@ -126,9 +128,12 @@ class CthybT2GLabeler:
             gf_struct=[(spin, self.orbital_dim) for spin in self.spin_blocks],
             n_tau=self.n_tau,
             n_iw=self.n_iw,
-            delta_interface=True,
+            delta_interface=self.delta_interface,
         )
-        self._set_delta_tau(solver, delta_tau=delta_tau)
+        if self.delta_interface:
+            self._set_delta_tau(solver, delta_tau=delta_tau)
+        else:
+            self._set_g0_iw(solver, delta_tau=delta_tau, eps_d=eps)
 
         u_same, u_opp = U_matrix_kanamori(self.orbital_dim, float(U), float(J))
         h_int = h_int_kanamori(
@@ -147,9 +152,11 @@ class CthybT2GLabeler:
             "n_cycles": self.n_cycles,
             "n_warmup_cycles": self.n_warmup_cycles,
             "length_cycle": self.length_cycle,
-            "measure_G_tau": True,
             "measure_pert_order": True,
         }
+        if self.delta_interface:
+            solve_kwargs["h_loc0"] = h_loc0
+        solve_kwargs["measure_G_tau"] = True
         solve_kwargs.update(self.solve_kwargs)
         solver.solve(**solve_kwargs)
 
@@ -173,14 +180,14 @@ class CthybT2GLabeler:
             ) from exc
         return Solver, c, c_dag, h_int_kanamori, U_matrix_kanamori
 
-    def _set_g0_iw(self, solver: Any, *, delta_tau: np.ndarray, eps_d: np.ndarray, mu: float) -> None:
+    def _set_g0_iw(self, solver: Any, *, delta_tau: np.ndarray, eps_d: np.ndarray) -> None:
         coeffs = self.grid.coeffs_from_gtau(delta_tau)
         identity = np.eye(self.orbital_dim, dtype=complex)
         for spin in self.spin_blocks:
             for iw in solver.G0_iw[spin].mesh:
                 z = complex(iw)
                 delta_iw = self._eval_dlr_iw(coeffs, z)
-                inverse_g0 = z * identity + mu * identity - eps_d - delta_iw
+                inverse_g0 = z * identity - eps_d - delta_iw
                 solver.G0_iw[spin][iw] = np.linalg.inv(inverse_g0)
 
     def _eval_dlr_iw(self, coeffs: np.ndarray, z: complex) -> np.ndarray:
@@ -201,7 +208,10 @@ class CthybT2GLabeler:
         mu: float,
     ) -> Any:
         h_loc0 = 0
-        one_body = np.asarray(eps_d, dtype=float) - mu * np.eye(self.orbital_dim, dtype=float)
+        del mu
+        # In solid_dmft's delta_interface path this is SumkDFT.eff_atomic_levels():
+        # the one-body impurity Hamiltonian already shifted by mu and DC.
+        one_body = np.asarray(eps_d, dtype=float)
         for spin in self.spin_blocks:
             for i in range(self.orbital_dim):
                 for j in range(self.orbital_dim):
