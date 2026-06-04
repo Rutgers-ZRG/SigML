@@ -13,7 +13,7 @@ from torch import nn
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from sigml.solver.net import FeedforwardNet
+from sigml.solver.net import BlockResNet, FeedforwardNet
 from sigml.solver.nn_solver_schema import (
     solver_input_features,
     unflatten_block_features,
@@ -110,6 +110,16 @@ def load_model(checkpoint_path: str | Path, *, input_dim: int, output_dim: int) 
         )
         _load_state_dict(model, state_dict)
         return model
+    if architecture == "block-resnet":
+        model = BlockResNet(
+            orbital_dim=int(checkpoint.get("orbital_dim", 3)),
+            n_tau=int(checkpoint.get("n_tau", (output_dim // (3 * 3 * 2)))),
+            scalar_dim=int(checkpoint.get("scalar_dim", input_dim - output_dim)),
+            hidden_dim=int(checkpoint.get("hidden_dim", 512)),
+            num_layers=int(checkpoint.get("num_layers", 4)),
+        )
+        _load_state_dict(model, state_dict)
+        return model
 
     model = FeedforwardNet()
     _load_state_dict(model, state_dict)
@@ -117,7 +127,9 @@ def load_model(checkpoint_path: str | Path, *, input_dim: int, output_dim: int) 
 
 
 def _extract_state_dict(checkpoint: dict[str, Any]) -> dict[str, torch.Tensor]:
-    if "state_dict" in checkpoint:
+    if "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+    elif "state_dict" in checkpoint:
         state_dict = checkpoint["state_dict"]
     else:
         state_dict = checkpoint
