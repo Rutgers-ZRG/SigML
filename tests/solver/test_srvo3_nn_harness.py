@@ -12,6 +12,7 @@ from sigml.solver.srvo3_nn_harness import (
     Srvo3NNSidecarSettings,
     _mu_minus_eps_over_u,
     make_nn_solver_config,
+    regularize_sigma_iw,
     stabilize_g_dlr,
     write_stub_block_resnet_checkpoint,
 )
@@ -73,3 +74,58 @@ def test_stabilize_g_dlr_preserves_hermiticity_and_adds_diagonal():
 def test_mu_minus_eps_over_u_matches_dataset_scalar_convention():
     eps_d = np.diag([0.30, 0.33, 0.36]).astype(complex)
     assert _mu_minus_eps_over_u(12.3, eps_d, U=2.0) == (12.3 - 0.33) / 2.0
+
+
+def test_regularize_sigma_iw_clamps_positive_frequency_diagonal():
+    mesh = [-(2 * n + 1) * 1j for n in range(4, -1, -1)] + [(2 * n + 1) * 1j for n in range(5)]
+    sigma = _FakeBlockGf(
+        "up_0",
+        np.stack([np.eye(3, dtype=complex) * (1.0 + 100.0j) for _ in mesh]),
+        mesh,
+    )
+
+    diag = regularize_sigma_iw(sigma, tail_fraction=0.4, max_abs=50.0, causality_eps=1e-6)
+
+    data = sigma.blocks[0].data
+    pos = np.flatnonzero(np.asarray(mesh).imag > 0.0)
+    assert diag["causality_violations"] > 0
+    assert np.all(np.diagonal(data[pos], axis1=1, axis2=2).imag <= 0.0)
+    for idx in pos:
+        neg_idx = int(np.argmin(np.abs(np.asarray(mesh) + mesh[idx])))
+        np.testing.assert_allclose(data[neg_idx], data[idx].conj())
+
+
+def test_regularize_sigma_iw_uses_reference_tail_anchor():
+    mesh = [-(2 * n + 1) * 1j for n in range(4, -1, -1)] + [(2 * n + 1) * 1j for n in range(5)]
+    sigma = _FakeBlockGf(
+        "up_0",
+        np.stack([np.eye(3, dtype=complex) * (2.0 + 200.0j) for _ in mesh]),
+        mesh,
+    )
+    reference = _FakeBlockGf(
+        "up_0",
+        np.stack([np.eye(3, dtype=complex) * (0.5 - 0.1j) for _ in mesh]),
+        mesh,
+    )
+
+    regularize_sigma_iw(sigma, reference=reference, tail_fraction=0.2, max_abs=50.0)
+
+    data = sigma.blocks[0].data
+    ref = reference.blocks[0].data
+    pos = np.flatnonzero(np.asarray(mesh).imag > 0.0)
+    np.testing.assert_allclose(data[pos[-1]], ref[pos[-1]])
+
+
+class _FakeBlock:
+    def __init__(self, data: np.ndarray, mesh: list[complex]):
+        self.data = np.asarray(data, dtype=complex)
+        self.mesh = mesh
+
+
+class _FakeBlockGf:
+    def __init__(self, name: str, data: np.ndarray, mesh: list[complex]):
+        self.blocks = [_FakeBlock(data, mesh)]
+        self.names = [name]
+
+    def __iter__(self):
+        return iter(zip(self.names, self.blocks))

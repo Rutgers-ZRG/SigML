@@ -9,6 +9,7 @@ from pathlib import Path
 
 from sigml.solver.pydlr_grid import PydlrGrid
 from sigml.solver.srvo3_nn_harness import (
+    Srvo3NNWarmStart,
     Srvo3NNSidecarSettings,
     default_base_python_command,
     result_to_json,
@@ -31,7 +32,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eps", type=float, default=1e-10)
     parser.add_argument("--mix-sigma", type=float, default=0.5)
     parser.add_argument("--mu-precision", type=float, default=0.01)
+    parser.add_argument("--calc-mu-delta", type=float, default=0.5)
+    parser.add_argument("--calc-mu-max-loops", type=int, default=100)
+    parser.add_argument("--density-scan-radius", type=float, default=20.0)
+    parser.add_argument("--density-scan-points", type=int, default=17)
     parser.add_argument("--regularization", type=float, default=1e-3)
+    parser.add_argument(
+        "--warm-start-h5",
+        default=None,
+        help="Optional solid_dmft HDF archive to seed Sigma from DMFT_results/<iteration>/Sigma_freq_0.",
+    )
+    parser.add_argument("--warm-start-iteration", default="last_iter")
+    parser.add_argument(
+        "--no-sigma-mix-anchor",
+        action="store_true",
+        help="Do not use the warm-start Sigma as the high-frequency projection anchor.",
+    )
+    parser.add_argument("--sigma-tail-fraction", type=float, default=0.35)
+    parser.add_argument("--sigma-max-abs", type=float, default=50.0)
+    parser.add_argument("--sigma-causality-eps", type=float, default=1e-8)
     parser.add_argument(
         "--convergence-tol",
         type=float,
@@ -73,6 +92,13 @@ def main() -> None:
         python_command=python_command,
         timeout_seconds=args.timeout_seconds,
     )
+    warm_start = None
+    if args.warm_start_h5:
+        warm_start = Srvo3NNWarmStart(
+            h5_path=Path(args.warm_start_h5).resolve(),
+            iteration=str(args.warm_start_iteration),
+            sigma_mix_anchor=not bool(args.no_sigma_mix_anchor),
+        )
     result = run_srvo3_nn_harness(
         h5_path=args.h5,
         output_dir=out_dir,
@@ -84,7 +110,15 @@ def main() -> None:
         eps=args.eps,
         mix_sigma=args.mix_sigma,
         mu_precision=args.mu_precision,
+        calc_mu_delta=args.calc_mu_delta,
+        calc_mu_max_loops=args.calc_mu_max_loops,
+        density_scan_radius=args.density_scan_radius,
+        density_scan_points=args.density_scan_points,
         regularization=args.regularization,
+        warm_start=warm_start,
+        sigma_tail_fraction=args.sigma_tail_fraction,
+        sigma_max_abs=args.sigma_max_abs,
+        sigma_causality_eps=args.sigma_causality_eps,
         convergence_tol=args.convergence_tol,
         min_iterations=args.min_iterations,
     )

@@ -28,6 +28,13 @@ class Srvo3NNSidecarSettings:
 
 
 @dataclass(frozen=True)
+class Srvo3NNWarmStart:
+    h5_path: Path
+    iteration: str = "last_iter"
+    sigma_mix_anchor: bool = True
+
+
+@dataclass(frozen=True)
 class Srvo3NNIteration:
     iteration: int
     chemical_potential: float
@@ -39,6 +46,11 @@ class Srvo3NNIteration:
     sigma_norm: float
     converged: bool = False
     g_delta_mse: float | None = None
+    density_scan_min: float | None = None
+    density_scan_max: float | None = None
+    density_scan_crosses_target: bool | None = None
+    sigma_causality_violations: int | None = None
+    sigma_max_abs: float | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +140,15 @@ def run_srvo3_nn_harness(
     mix_sigma: float = 0.5,
     mu_precision: float = 0.01,
     regularization: float = 1e-3,
+    warm_start: Srvo3NNWarmStart | None = None,
+    density_target: float = 1.0,
+    calc_mu_delta: float = 0.5,
+    calc_mu_max_loops: int = 100,
+    density_scan_radius: float = 20.0,
+    density_scan_points: int = 81,
+    sigma_tail_fraction: float = 0.35,
+    sigma_max_abs: float = 50.0,
+    sigma_causality_eps: float = 1e-8,
     convergence_tol: float | None = None,
     min_iterations: int = 2,
 ) -> Srvo3NNHarnessResult:
@@ -148,6 +169,14 @@ def run_srvo3_nn_harness(
     grid = PydlrGrid(beta=float(beta), lamb=float(beta) * float(omega_max), eps=float(eps))
     sum_k = SumkDFT(hdf_file=str(h5_path), beta=float(beta), n_iw=int(n_iw))
     sigma = _zero_solver_block_gf(sum_k, beta=float(beta), n_iw=int(n_iw))
+    sigma_anchor = None
+    if warm_start is not None:
+        sigma_anchor = _load_reference_block_gf(
+            warm_start.h5_path,
+            group=f"DMFT_results/{warm_start.iteration}/Sigma_freq_0",
+            template=sigma,
+        )
+        sigma << sigma_anchor
     config = make_nn_solver_config(settings)
 
     iterations: list[Srvo3NNIteration] = []
@@ -156,13 +185,20 @@ def run_srvo3_nn_harness(
     saved_sigma: list[np.ndarray] = []
     saved_mu: list[float] = []
     previous_g_dlr: np.ndarray | None = None
+    last_eps_d: np.ndarray | None = None
 
     for it in range(1, int(n_iterations) + 1):
         sum_k.put_Sigma([sigma])
-        try:
-            mu = float(sum_k.calc_mu(precision=float(mu_precision)))
-        except TypeError:
-            mu = float(sum_k.calc_mu())
+        mu, mu_diag = calc_mu_with_diagnostics(
+            sum_k,
+            precision=float(mu_precision),
+            delta=float(calc_mu_delta),
+            max_loops=int(calc_mu_max_loops),
+            density_target=float(density_target),
+            scan_radius=float(density_scan_radius),
+            scan_points=int(density_scan_points),
+            beta=float(beta),
+        )
         sum_k.set_mu(mu)
 
         g_loc = sum_k.extract_G_loc()[0]
@@ -183,10 +219,20 @@ def run_srvo3_nn_harness(
         g_freq = block_gf_from_dlr(g0, g_dlr, grid)
         sigma_new = g0.copy()
         sigma_new << inverse(g0) - inverse(g_freq)
+        sigma_diag = regularize_sigma_iw(
+            sigma_new,
+            reference=sigma_anchor if warm_start is not None and warm_start.sigma_mix_anchor else None,
+            tail_fraction=float(sigma_tail_fraction),
+            max_abs=float(sigma_max_abs),
+            causality_eps=float(sigma_causality_eps),
+        )
         if it > 1:
             sigma << (1.0 - float(mix_sigma)) * sigma + float(mix_sigma) * sigma_new
         else:
-            sigma << sigma_new
+            if sigma_anchor is not None:
+                sigma << (1.0 - float(mix_sigma)) * sigma_anchor + float(mix_sigma) * sigma_new
+            else:
+                sigma << sigma_new
 
         occ = np.diag(orbital_occupation(g_dlr)).real
         z_proxy = np.diag(quasiparticle_proxy(g_dlr, grid, float(beta))).real
@@ -212,6 +258,11 @@ def run_srvo3_nn_harness(
                 sigma_norm=float(np.linalg.norm(sigma_dense)),
                 converged=bool(converged),
                 g_delta_mse=None if g_delta_mse is None else float(g_delta_mse),
+                density_scan_min=mu_diag["density_min"],
+                density_scan_max=mu_diag["density_max"],
+                density_scan_crosses_target=mu_diag["crosses_target"],
+                sigma_causality_violations=sigma_diag["causality_violations"],
+                sigma_max_abs=sigma_diag["max_abs"],
             )
         )
         saved_delta.append(np.asarray(delta_dlr, dtype=np.complex128))
@@ -219,6 +270,7 @@ def run_srvo3_nn_harness(
         saved_sigma.append(np.asarray(sigma_dense, dtype=np.complex128))
         saved_mu.append(mu)
         previous_g_dlr = np.asarray(g_dlr, dtype=np.complex128)
+        last_eps_d = np.asarray(eps_d, dtype=np.complex128)
         if converged:
             break
 
@@ -231,12 +283,12 @@ def run_srvo3_nn_harness(
         mu=np.asarray(saved_mu, dtype=np.float64),
         beta=np.asarray(float(beta), dtype=np.float64),
         tau_nodes=np.asarray(grid.tau_nodes, dtype=np.float64),
-        eps_d=np.asarray(eps_d, dtype=np.complex128),
+        eps_d=np.asarray(last_eps_d if last_eps_d is not None else np.zeros((3, 3)), dtype=np.complex128),
     )
     result = Srvo3NNHarnessResult(
         h5_path=str(h5_path),
         checkpoint_path=str(settings.checkpoint_path),
-        n_iterations=int(n_iterations),
+        n_iterations=len(iterations),
         beta=float(beta),
         grid_rank=int(grid.rank),
         output_npz=str(npz_path),
@@ -252,6 +304,160 @@ def result_to_json(result: Srvo3NNHarnessResult) -> dict[str, Any]:
     payload = asdict(result)
     payload["iterations"] = [asdict(row) for row in result.iterations]
     return payload
+
+
+def calc_mu_with_diagnostics(
+    sum_k: Any,
+    *,
+    precision: float,
+    delta: float,
+    max_loops: int,
+    density_target: float,
+    scan_radius: float,
+    scan_points: int,
+    beta: float,
+) -> tuple[float, dict[str, float | bool | None]]:
+    """Run SumkDFT.calc_mu and attach a bounded density scan on failure/success."""
+
+    try:
+        raw_mu = sum_k.calc_mu(
+            precision=float(precision),
+            delta=float(delta),
+            max_loops=int(max_loops),
+            beta=float(beta),
+        )
+        if raw_mu is None:
+            raise ValueError("calc_mu returned None")
+        mu = float(raw_mu)
+        return mu, _density_scan_diagnostics(
+            sum_k,
+            center_mu=mu,
+            density_target=float(density_target),
+            scan_radius=float(scan_radius),
+            scan_points=int(scan_points),
+            beta=float(beta),
+        )
+    except TypeError as exc:
+        if "unexpected" not in str(exc) and "keyword" not in str(exc):
+            raise
+        raw_mu = sum_k.calc_mu()
+        if raw_mu is None:
+            raise ValueError("calc_mu returned None") from exc
+        mu = float(raw_mu)
+        return mu, _density_scan_diagnostics(
+            sum_k,
+            center_mu=mu,
+            density_target=float(density_target),
+            scan_radius=float(scan_radius),
+            scan_points=int(scan_points),
+            beta=float(beta),
+        )
+    except Exception as exc:
+        current_mu = float(getattr(sum_k, "chemical_potential", 0.0))
+        diag = _density_scan_diagnostics(
+            sum_k,
+            center_mu=current_mu,
+            density_target=float(density_target),
+            scan_radius=float(scan_radius),
+            scan_points=int(scan_points),
+            beta=float(beta),
+        )
+        diag["error"] = f"{type(exc).__name__}: {exc}"
+        raise RuntimeError(
+            "calc_mu failed; density scan "
+            f"min={diag['density_min']} max={diag['density_max']} "
+            f"crosses_target={diag['crosses_target']}"
+        ) from exc
+
+
+def _density_scan_diagnostics(
+    sum_k: Any,
+    *,
+    center_mu: float,
+    density_target: float,
+    scan_radius: float,
+    scan_points: int,
+    beta: float,
+) -> dict[str, float | bool | None]:
+    densities: list[float] = []
+    for mu in np.linspace(
+        float(center_mu) - float(scan_radius),
+        float(center_mu) + float(scan_radius),
+        max(3, int(scan_points)),
+    ):
+        try:
+            density = float(sum_k.total_density(mu=float(mu), with_Sigma=True, beta=float(beta)))
+        except Exception:
+            continue
+        if np.isfinite(density):
+            densities.append(density)
+    if not densities:
+        return {"density_min": None, "density_max": None, "crosses_target": False}
+    density_min = float(np.min(densities))
+    density_max = float(np.max(densities))
+    return {
+        "density_min": density_min,
+        "density_max": density_max,
+        "crosses_target": bool(density_min <= float(density_target) <= density_max),
+    }
+
+
+def regularize_sigma_iw(
+    sigma: Any,
+    *,
+    reference: Any | None = None,
+    tail_fraction: float = 0.35,
+    max_abs: float = 50.0,
+    causality_eps: float = 1e-8,
+) -> dict[str, int | float]:
+    """Project a Matsubara self-energy onto a bounded causal diagonal tail."""
+
+    violations = 0
+    max_seen = 0.0
+    ref_blocks = {name: block for name, block in reference} if reference is not None else {}
+    for name, block in sigma:
+        data = np.asarray(block.data)
+        ref_data = np.asarray(ref_blocks[name].data) if name in ref_blocks else None
+        mesh = np.asarray([complex(iw) for iw in block.mesh])
+        pos = np.flatnonzero(mesh.imag > 0.0)
+        if pos.size == 0:
+            continue
+        tail_count = max(1, int(np.ceil(pos.size * float(tail_fraction))))
+        tail_start = pos[-tail_count]
+        for idx in pos:
+            neg_idx = int(np.argmin(np.abs(mesh + mesh[idx])))
+            tail_weight = 0.0
+            if idx >= tail_start:
+                if tail_count == 1:
+                    tail_weight = 1.0
+                else:
+                    denom = max(float(pos[-1] - tail_start), 1.0)
+                    tail_weight = float((idx - tail_start) / denom)
+            for orb in range(data.shape[1]):
+                value = complex(data[idx, orb, orb])
+                max_seen = max(max_seen, abs(value))
+                if value.imag > -float(causality_eps):
+                    violations += 1
+                    value = complex(value.real, -float(causality_eps))
+                if abs(value) > float(max_abs):
+                    violations += 1
+                    if ref_data is not None:
+                        value = complex(ref_data[idx, orb, orb])
+                    else:
+                        scale = float(max_abs) / abs(value)
+                        value *= scale
+                if tail_weight > 0.0:
+                    if ref_data is not None:
+                        tail = complex(ref_data[idx, orb, orb])
+                    else:
+                        tail_values = data[pos[-tail_count:], orb, orb]
+                        tail = complex(np.mean(tail_values.real), -float(causality_eps))
+                    value = (1.0 - tail_weight) * value + tail_weight * tail
+                data[idx, orb, orb] = value
+                if 0 <= neg_idx < data.shape[0]:
+                    data[neg_idx, orb, orb] = value.conjugate()
+        block.data[:] = data
+    return {"causality_violations": int(violations), "max_abs": float(max_seen)}
 
 
 def delta_dlr_from_g0(sum_k: Any, g0: Any, grid: PydlrGrid) -> tuple[np.ndarray, np.ndarray]:
@@ -270,6 +476,32 @@ def delta_dlr_from_g0(sum_k: Any, g0: Any, grid: PydlrGrid) -> tuple[np.ndarray,
     delta = _dlr_nodes_from_block_iw(delta_iw, grid)
     eps_d = _spin_average_matrix(eal_solver)
     return _hermitian_part(delta), eps_d
+
+
+def _load_reference_block_gf(path: str | Path, *, group: str, template: Any) -> Any:
+    from h5 import HDFArchive
+
+    with HDFArchive(str(path), "r") as archive:
+        source = archive
+        for part in group.split("/"):
+            source = source[part]
+    out = template.copy()
+    _copy_block_gf_values(out, source)
+    return out
+
+
+def _copy_block_gf_values(destination: Any, source: Any) -> None:
+    source_blocks = {str(name): block for name, block in source}
+    for name, block in destination:
+        src = source_blocks[str(name)]
+        dest_data = np.asarray(block.data)
+        src_data = np.asarray(src.data)
+        if dest_data.shape != src_data.shape:
+            raise ValueError(
+                f"Cannot warm-start block {name!r}: destination shape "
+                f"{dest_data.shape} differs from source shape {src_data.shape}"
+            )
+        block.data[:] = src_data
 
 
 def block_gf_from_dlr(template: Any, g_dlr: np.ndarray, grid: PydlrGrid) -> Any:
